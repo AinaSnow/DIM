@@ -10,28 +10,32 @@ import React, {
   useEffect,
 } from 'react';
 
-import GlobalHotkeys from '../hotkeys/GlobalHotkeys';
 import { Loading } from 'app/dim-ui/Loading';
 import ReactDOM from 'react-dom';
-import { SearchConfig } from './search-filters';
+import { searchConfigSelector } from './search-config';
 import Sheet from 'app/dim-ui/Sheet';
 import Textarea from 'textcomplete/lib/textarea';
 import Textcomplete from 'textcomplete/lib/textcomplete';
 import _ from 'lodash';
 import { t } from 'app/i18next-t';
 import { chainComparator, compareBy } from 'app/utils/comparators';
+import { useSelector } from 'react-redux';
 
 interface ProvidedProps {
+  /** Whether the "X" button that clears the selection should always be shown. */
   alwaysShowClearButton?: boolean;
+  /** Placeholder text when nothing has been typed */
   placeholder: string;
-  searchConfig: SearchConfig;
   autoFocus?: boolean;
+  /** A fake property that can be used to force the "live" query to be replaced with the one from props */
   searchQueryVersion?: number;
+  /** The search query to fill in the input. This is used only initially, or when searchQueryVersion changes */
   searchQuery?: string;
-  /** Children are used as optional extra action buttons when there is a query. */
+  /** Children are used as optional extra action buttons only when there is a query. */
   children?: React.ReactChild;
-  /** TODO: have an initialQuery prop */
+  /** Fired whenever the query changes (already debounced) */
   onQueryChanged(query: string): void;
+  /** Fired whenever the query has been cleared */
   onClear?(): void;
 }
 
@@ -60,8 +64,11 @@ const filterNames = [
   'description',
 ];
 
+/** An interface for interacting with the search filter through a ref */
 export interface SearchFilterRef {
+  /** Switch focus to the filter field */
   focusFilterInput(): void;
+  /** Clear the filter field */
   clearFilter(): void;
 }
 
@@ -72,7 +79,6 @@ export interface SearchFilterRef {
 export default React.forwardRef(function SearchFilterInput(
   {
     searchQueryVersion,
-    searchConfig,
     searchQuery,
     alwaysShowClearButton,
     placeholder,
@@ -86,6 +92,7 @@ export default React.forwardRef(function SearchFilterInput(
   const [liveQuery, setLiveQuery] = useState('');
   const [filterHelpOpen, setFilterHelpOpen] = useState(false);
 
+  const searchConfig = useSelector(searchConfigSelector);
   const textcomplete = useRef<Textcomplete>();
   const inputElement = useRef<HTMLInputElement>(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -227,30 +234,7 @@ export default React.forwardRef(function SearchFilterInput(
 
   return (
     <div className="search-filter" role="search">
-      <GlobalHotkeys
-        hotkeys={[
-          {
-            combo: 'f',
-            description: t('Hotkey.StartSearch'),
-            callback: (event) => {
-              focusFilterInput();
-              event.preventDefault();
-              event.stopPropagation();
-            },
-          },
-          {
-            combo: 'shift+f',
-            description: t('Hotkey.StartSearchClear'),
-            callback: (event) => {
-              clearFilter();
-              focusFilterInput();
-              event.preventDefault();
-              event.stopPropagation();
-            },
-          },
-        ]}
-      />
-      <AppIcon icon={searchIcon} />
+      <AppIcon icon={searchIcon} className="search-bar-icon" />
       <input
         ref={inputElement}
         className="filter-input"
@@ -269,18 +253,15 @@ export default React.forwardRef(function SearchFilterInput(
         onBlur={() => textcomplete.current?.hide()}
       />
 
-      {liveQuery.length === 0 ? (
-        <span onClick={showFilterHelp} className="filter-help" title={t('Header.Filters')}>
-          <AppIcon icon={helpIcon} />
-        </span>
-      ) : (
-        children
-      )}
+      {liveQuery.length !== 0 && children}
+
+      <span onClick={showFilterHelp} className="filter-bar-button" title={t('Header.Filters')}>
+        <AppIcon icon={helpIcon} />
+      </span>
+
       {(liveQuery.length > 0 || alwaysShowClearButton) && (
-        <span className="filter-help">
-          <a onClick={clearFilter} title={t('Header.Clear')}>
-            <AppIcon icon={disabledIcon} />
-          </a>
+        <span className="filter-bar-button" onClick={clearFilter} title={t('Header.Clear')}>
+          <AppIcon icon={disabledIcon} />
         </span>
       )}
       {filterHelpOpen &&

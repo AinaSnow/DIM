@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import clsx from 'clsx';
 import { DimItem } from './item-types';
 import { TagValue } from './dim-item-info';
@@ -11,6 +11,8 @@ import styles from './InventoryItem.m.scss';
 import NewItemIndicator from './NewItemIndicator';
 import TagIcon from './TagIcon';
 import { selectedSubclassPath } from './subclass';
+import { SUBCLASS_BUCKET } from 'app/search/d2-known-values';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
 
 const itemTierDogearStyles = {
   Legendary: styles.legendary,
@@ -39,6 +41,7 @@ interface Props {
   innerRef?: React.Ref<HTMLDivElement>;
   /** TODO: item locked needs to be passed in */
   onClick?(e);
+  onTouch?(e);
   onShiftClick?(e): void;
   onDoubleClick?(e);
 }
@@ -54,10 +57,12 @@ export default function InventoryItem({
   inventoryWishListRoll,
   ignoreSelectedPerks,
   onClick,
+  onTouch,
   onShiftClick,
   onDoubleClick,
   innerRef,
 }: Props) {
+  const [touchActive, setTouchActive] = useState(false);
   const isCapped = item.maxStackSize > 1 && item.amount === item.maxStackSize && item.uniqueStack;
 
   const uiWishListRoll = wishListsEnabled ? toUiWishListRoll(inventoryWishListRoll) : undefined;
@@ -81,6 +86,7 @@ export default function InventoryItem({
       selectedSubclassPath(item.talentGrid)) ||
     null;
   const itemStyles = {
+    [styles.touchActive]: touchActive,
     [styles.searchHidden]: searchHidden,
     [styles.subclassPathTop]: subclassPath?.position === 'top',
     [styles.subclassPathMiddle]: subclassPath?.position === 'middle',
@@ -92,11 +98,25 @@ export default function InventoryItem({
     [styles.masterwork]: item.masterwork,
   });
 
+  const onTouchStart = (e: React.TouchEvent) => {
+    setTouchActive(true);
+    onTouch?.(e);
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    setTouchActive(false);
+    onTouch?.(e);
+  };
+
   return (
     <div
       id={item.index}
       onClick={enhancedOnClick}
       onDoubleClick={onDoubleClick}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchEnd}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
       title={`${item.name}\n${item.typeName}`}
       className={clsx('item', itemStyles)}
       ref={innerRef}
@@ -147,7 +167,8 @@ export default function InventoryItem({
 export function borderless(item: DimItem) {
   return (
     (item.isDestiny2?.() &&
-      (item.bucket.hash === 3284755031 || item.itemCategoryHashes?.includes(268598612))) ||
+      (item.bucket.hash === SUBCLASS_BUCKET ||
+        item.itemCategoryHashes?.includes(ItemCategoryHashes.Packages))) ||
     item.isEngram
   );
 }

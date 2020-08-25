@@ -7,12 +7,12 @@ import { D1ManifestDefinitions } from '../destiny1/d1-definitions';
 import { D2ManifestDefinitions } from '../destiny2/d2-definitions';
 import { DimItem } from '../inventory/item-types';
 import { v4 as uuidv4 } from 'uuid';
-import { RootState, ThunkDispatchProp } from '../store/reducers';
+import { RootState, ThunkDispatchProp } from 'app/store/types';
 import { itemSortOrderSelector } from '../settings/item-sort';
 import { connect } from 'react-redux';
 import { createSelector } from 'reselect';
-import { destinyVersionSelector, currentAccountSelector } from '../accounts/reducer';
-import { storesSelector } from '../inventory/selectors';
+import { destinyVersionSelector, currentAccountSelector } from 'app/accounts/selectors';
+import { storesSelector, bucketsSelector } from '../inventory/selectors';
 import LoadoutDrawerDropTarget from './LoadoutDrawerDropTarget';
 import { InventoryBuckets } from '../inventory/inventory-buckets';
 import './loadout-drawer.scss';
@@ -399,7 +399,7 @@ function mapStateToProps() {
     account: currentAccountSelector(state)!,
     classTypeOptions: classTypeOptionsSelector(state),
     stores: storesSelector(state),
-    buckets: state.inventory.buckets!,
+    buckets: bucketsSelector(state)!,
     defs:
       destinyVersionSelector(state) === 2 ? state.manifest.d2Manifest! : state.manifest.d1Manifest!,
     loadouts: loadoutsSelector(state),

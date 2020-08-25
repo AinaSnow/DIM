@@ -1,14 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { t } from 'app/i18next-t';
 import { AppIcon, tagIcon, faClone } from '../shell/icons';
 import { itemTagSelectorList, isTagValue, TagValue } from '../inventory/dim-item-info';
 import { connect, MapDispatchToPropsFunction } from 'react-redux';
-import { RootState } from '../store/reducers';
+import { RootState } from 'app/store/types';
 import { setSearchQuery } from '../shell/actions';
 import _ from 'lodash';
 import './search-filter.scss';
-import { destinyVersionSelector, currentAccountSelector } from '../accounts/reducer';
-import { SearchConfig, searchFilterSelector, searchConfigSelector } from './search-filters';
+import { destinyVersionSelector, currentAccountSelector } from '../accounts/selectors';
+import { searchFilterSelector } from './search-filter';
 import { DestinyAccount } from '../accounts/destiny-account';
 import { DimItem } from '../inventory/item-types';
 import { loadingTracker } from '../shell/loading-tracker';
@@ -18,10 +18,15 @@ import { CompareService } from '../compare/compare.service';
 import { bulkTagItems } from 'app/inventory/tag-items';
 import { searchQueryVersionSelector, querySelector } from 'app/shell/reducer';
 import { setItemLockState } from 'app/inventory/item-move-service';
-import { storesSelector } from 'app/inventory/selectors';
+import { storesSelector, bucketsSelector } from 'app/inventory/selectors';
 import { getAllItems } from 'app/inventory/stores-helpers';
-import { touch } from 'app/inventory/actions';
+import { touch, touchItem } from 'app/inventory/actions';
 import { DestinyVersion } from '@destinyitemmanager/dim-api-types';
+import { useLocation } from 'react-router';
+import { emptyArray, emptySet } from 'app/utils/empty';
+import { InventoryBuckets } from 'app/inventory/inventory-buckets';
+import { DimStore } from 'app/inventory/store-types';
+import SearchBar from './SearchBar';
 
 // these exist in comments so i18n       t('Tags.TagItems') t('Tags.ClearTag')
 // doesn't delete the translations       t('Tags.LockAll') t('Tags.UnlockAll')
@@ -31,7 +36,6 @@ bulkItemTags.push({ type: 'lock', label: 'Tags.LockAll' });
 bulkItemTags.push({ type: 'unlock', label: 'Tags.UnlockAll' });
 
 interface ProvidedProps {
-  mobile?: boolean;
   onClear?(): void;
 }
 
@@ -39,11 +43,10 @@ interface StoreProps {
   isPhonePortrait: boolean;
   destinyVersion: DestinyVersion;
   account?: DestinyAccount;
-  searchConfig: SearchConfig;
   searchQueryVersion: number;
   searchQuery: string;
-  filteredItems: DimItem[];
-  isComparable: boolean;
+  stores: DimStore[];
+  buckets?: InventoryBuckets;
   searchFilter(item: DimItem): boolean;
 }
 
@@ -51,50 +54,40 @@ type DispatchProps = {
   setSearchQuery(query: string): void;
   bulkTagItems(items: DimItem[], tag: TagValue): void;
   touchStores(): void;
+  touchItem(id: string): void;
 };
 
 const mapDispatchToProps: MapDispatchToPropsFunction<DispatchProps, StoreProps> = (dispatch) => ({
   setSearchQuery: (query) => dispatch(setSearchQuery(query, true)),
   bulkTagItems: (items, tag) => dispatch(bulkTagItems(items, tag) as any),
   touchStores: touch,
+  touchItem: (id) => dispatch(touchItem(id)),
 });
 
 type Props = ProvidedProps & StoreProps & DispatchProps;
 
 function mapStateToProps(state: RootState): StoreProps {
-  const searchFilter = searchFilterSelector(state);
-  // TODO: Narrow this down by screen?
-  const filteredItems = getAllItems(storesSelector(state), searchFilter);
-
-  let isComparable = false;
-  if (filteredItems.length && !CompareService.dialogOpen) {
-    const type = filteredItems[0].typeName;
-    isComparable = filteredItems.every((i) => i.typeName === type);
-  }
-
   return {
     isPhonePortrait: state.shell.isPhonePortrait,
     destinyVersion: destinyVersionSelector(state),
     account: currentAccountSelector(state),
-    searchConfig: searchConfigSelector(state),
-    searchFilter,
+    searchFilter: searchFilterSelector(state),
     searchQuery: querySelector(state),
     searchQueryVersion: searchQueryVersionSelector(state),
-    filteredItems,
-    isComparable,
+    stores: storesSelector(state),
+    buckets: bucketsSelector(state),
   };
 }
 
 export function SearchFilter(
   {
     isPhonePortrait,
-    mobile,
-    searchConfig,
     setSearchQuery,
     searchQuery,
     searchQueryVersion,
-    filteredItems,
-    isComparable,
+    stores,
+    buckets,
+    searchFilter,
     touchStores,
     bulkTagItems,
     onClear,
@@ -102,6 +95,40 @@ export function SearchFilter(
   ref: React.Ref<SearchFilterRef>
 ) {
   const [showSelect, setShowSelect] = useState(false);
+  const location = useLocation();
+
+  const displayableBuckets = useMemo(
+    () =>
+      buckets
+        ? new Set(
+            Object.keys(buckets.byCategory).flatMap((category) =>
+              buckets.byCategory[category].map((b) => b.hash)
+            )
+          )
+        : emptySet<number>(),
+    [buckets]
+  );
+
+  // We don't have access to the selected store so we'd match multiple characters' worth.
+  // Just suppress the count for now
+  const onProgress = location.pathname.endsWith('progress');
+
+  const filteredItems = useMemo(
+    () =>
+      !onProgress && displayableBuckets.size
+        ? getAllItems(
+            stores,
+            (item: DimItem) => displayableBuckets.has(item.bucket.hash) && searchFilter(item)
+          )
+        : emptyArray<DimItem>(),
+    [displayableBuckets, onProgress, searchFilter, stores]
+  );
+
+  let isComparable = false;
+  if (filteredItems.length && !CompareService.dialogOpen) {
+    const type = filteredItems[0].typeName;
+    isComparable = filteredItems.every((i) => i.typeName === type);
+  }
 
   const bulkTag: React.ChangeEventHandler<HTMLSelectElement> = loadingTracker.trackPromise(
     async (e) => {
@@ -120,6 +147,7 @@ export function SearchFilter(
 
             // TODO: Gotta do this differently in react land
             item.locked = state;
+            touchItem(item.id);
           }
           showNotification({
             type: 'success',
@@ -156,55 +184,76 @@ export function SearchFilter(
 
   const onTagClicked = () => setShowSelect(true);
 
-  const onClearFilter = () => {
+  const onClearFilter = useCallback(() => {
     setShowSelect(false);
     onClear?.();
-  };
+  }, [onClear]);
 
   // TODO: since we no longer take in the query as a prop, we can't set it from outside (filterhelp, etc)
 
-  const placeholder = isPhonePortrait
-    ? t('Header.FilterHelpBrief')
-    : t('Header.FilterHelp', { example: 'is:dupe, is:maxpower, not:blue' });
+  const placeholder = useMemo(
+    () =>
+      isPhonePortrait
+        ? t('Header.FilterHelpBrief')
+        : t('Header.FilterHelp', { example: 'is:dupe, is:maxpower, -is:blue' }),
+    [isPhonePortrait]
+  );
 
-  return (
-    <SearchFilterInput
+  const extras = (
+    <>
+      {!onProgress && (
+        <span className="filter-match-count">
+          {t('Header.FilterMatchCount', { count: filteredItems.length })}
+        </span>
+      )}
+      {isComparable && (
+        <span
+          onClick={compareMatching}
+          className="filter-bar-button"
+          title={t('Header.CompareMatching')}
+        >
+          <AppIcon icon={faClone} />
+        </span>
+      )}
+
+      {showSelect ? (
+        <select className="bulk-tag-select filter-bar-button" onChange={bulkTag}>
+          {bulkItemTags.map((tag) => (
+            <option key={tag.type || 'default'} value={tag.type}>
+              {t(tag.label)}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <span className="filter-bar-button" onClick={onTagClicked} title={t('Header.BulkTag')}>
+          <AppIcon icon={tagIcon} />
+        </span>
+      )}
+    </>
+  );
+
+  return $featureFlags.newSearch ? (
+    <SearchBar
       ref={ref}
       onQueryChanged={setSearchQuery}
-      alwaysShowClearButton={mobile}
       placeholder={placeholder}
-      searchConfig={searchConfig}
       onClear={onClearFilter}
       searchQueryVersion={searchQueryVersion}
       searchQuery={searchQuery}
     >
-      <>
-        <span className="filter-match-count">
-          {t('Header.FilterMatchCount', { count: filteredItems.length })}
-        </span>
-        {isComparable && (
-          <span className="filter-help">
-            <a onClick={compareMatching}>
-              <AppIcon icon={faClone} title={t('Header.CompareMatching')} />
-            </a>
-          </span>
-        )}
-        <span className="filter-help">
-          {showSelect ? (
-            <select className="bulk-tag-select" onChange={bulkTag}>
-              {bulkItemTags.map((tag) => (
-                <option key={tag.type || 'default'} value={tag.type}>
-                  {t(tag.label)}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <a onClick={onTagClicked}>
-              <AppIcon icon={tagIcon} title={t('Header.BulkTag')} />
-            </a>
-          )}
-        </span>
-      </>
+      {extras}
+    </SearchBar>
+  ) : (
+    <SearchFilterInput
+      ref={ref}
+      onQueryChanged={setSearchQuery}
+      alwaysShowClearButton={isPhonePortrait}
+      placeholder={placeholder}
+      onClear={onClearFilter}
+      searchQueryVersion={searchQueryVersion}
+      searchQuery={searchQuery}
+    >
+      {extras}
     </SearchFilterInput>
   );
 }

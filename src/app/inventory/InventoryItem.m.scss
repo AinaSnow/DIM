@@ -3,7 +3,7 @@
 // Items hidden by search.
 .searchHidden {
   opacity: 0.2;
-  transform: scale(0.85);
+  transform: scale(0.75);
 }
 
 // The wrapper for draggable items. Global because it's referenced by other styles.
@@ -35,7 +35,6 @@
   height: var(--item-size);
   box-sizing: border-box;
   border: $item-border-width solid #ddd;
-  pointer-events: none;
 
   &:focus {
     outline: none;
@@ -45,6 +44,11 @@
   &:global(.transparent) {
     border-color: transparent;
   }
+}
+
+.touchActive {
+  opacity: 0.5;
+  transition: opacity 150ms ease-in 50ms; // delay <= to delayTouchStart in Root.tsx
 }
 
 // Masterwork item image
@@ -150,7 +154,6 @@
 
 // Individual icons in the icon tray
 .icon {
-  pointer-events: none;
   display: block;
   position: static;
   width: calc(var(--item-size) / 5);

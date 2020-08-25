@@ -77,14 +77,18 @@ async function responseIndicatesBadToken(response: Response) {
     (data.ErrorCode === PlatformErrorCodes.AccessTokenHasExpired ||
       data.ErrorCode === PlatformErrorCodes.WebAuthRequired ||
       // (also means the access token has expired)
-      data.ErrorCode === PlatformErrorCodes.WebAuthModuleAsyncFailed)
+      data.ErrorCode === PlatformErrorCodes.WebAuthModuleAsyncFailed ||
+      data.ErrorCode === PlatformErrorCodes.AuthorizationRecordRevoked ||
+      data.ErrorCode === PlatformErrorCodes.AuthorizationRecordExpired ||
+      data.ErrorCode === PlatformErrorCodes.AuthorizationCodeStale ||
+      data.ErrorCode === PlatformErrorCodes.AuthorizationCodeInvalid)
   );
 }
 
 /**
  * A fatal token error means we have to log in again.
  */
-class FatalTokenError extends Error {
+export class FatalTokenError extends Error {
   constructor(msg) {
     super(msg);
     this.name = 'FatalTokenError';
