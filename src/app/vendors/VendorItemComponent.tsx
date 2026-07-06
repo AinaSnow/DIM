@@ -1,42 +1,40 @@
-import { VendorItem } from './vendor-item';
-import React from 'react';
-import BungieImage from '../dim-ui/BungieImage';
+import { t } from 'app/i18next-t';
+import { DimItem } from 'app/inventory/item-types';
+import { ItemPopupExtraInfo } from 'app/item-popup/item-popup';
+import { DestinyCollectibleState } from 'bungie-api-ts/destiny2';
 import clsx from 'clsx';
-import { D2ManifestDefinitions } from '../destiny2/d2-definitions';
-import { DestinyItemQuantity, DestinyCollectibleState } from 'bungie-api-ts/destiny2';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import React, { use } from 'react';
+import BungieImage from '../dim-ui/BungieImage';
 import ConnectedInventoryItem from '../inventory/ConnectedInventoryItem';
 import ItemPopupTrigger from '../inventory/ItemPopupTrigger';
 import '../progress/milestone.scss';
-import { AppIcon, faCheck } from '../shell/icons';
-import styles from './VendorItem.m.scss';
-import { DimItem } from 'app/inventory/item-types';
-import { ItemPopupExtraInfo } from 'app/item-popup/item-popup';
-import helmetIcon from 'destiny-icons/armor_types/helmet.svg';
-import handCannonIcon from 'destiny-icons/weapons/hand_cannon.svg';
-import { Link } from 'react-router-dom';
-import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import { AppIcon, faCheck, lockIcon } from '../shell/icons';
+import Cost from './Cost';
+import * as styles from './VendorItem.m.scss';
+import { SingleVendorSheetContext } from './single-vendor/SingleVendorSheetContainer';
+import { VendorItem } from './vendor-item';
 
 export default function VendorItemComponent({
   item,
-  defs,
   owned,
   characterId,
 }: {
-  defs: D2ManifestDefinitions;
   item: VendorItem;
   owned: boolean;
   characterId?: string;
 }) {
   if (item.displayTile) {
+    const showVendor = use(SingleVendorSheetContext);
     return (
       <div className={styles.vendorItem}>
-        <Link to={`vendors/${item.previewVendorHash}?characterId=${characterId}`}>
+        <a onClick={() => showVendor?.({ characterId, vendorHash: item.previewVendorHash })}>
           <BungieImage
             className={styles.tile}
             title={item.displayProperties.name}
             src={item.displayProperties.icon}
           />
-        </Link>
+        </a>
         {item.displayProperties.name}
       </div>
     );
@@ -46,30 +44,34 @@ export default function VendorItemComponent({
     return null;
   }
 
-  const itemDef = defs.InventoryItem.get(item.item.hash);
-
-  const collectible =
-    itemDef.collectibleHash !== undefined
-      ? defs.Collectible.get(itemDef.collectibleHash)
-      : undefined;
-
   const acquired =
-    item.item.isDestiny2() &&
-    item.item.collectibleState !== null &&
-    !(item.item.collectibleState & DestinyCollectibleState.NotAcquired);
+    item.collectibleState !== undefined &&
+    !(item.collectibleState & DestinyCollectibleState.NotAcquired);
 
+  // Can't buy more copies of emblems or bounties other than repeatables.
+  const ownershipRule =
+    item.item?.itemCategoryHashes.includes(ItemCategoryHashes.Emblems) ||
+    (item.item?.itemCategoryHashes.includes(ItemCategoryHashes.Bounties) &&
+      !item.item.itemCategoryHashes.includes(ItemCategoryHashes.RepeatableBounties));
+
+  const mod = item.item.itemCategoryHashes.includes(ItemCategoryHashes.Mods_Mod);
+
+  const unavailable = !item.canBeSold || (owned && ownershipRule);
   return (
     <VendorItemDisplay
       item={item.item}
-      unavailable={!item.canPurchase || !item.canBeSold}
+      // do not allow dimming from filtering, since the D2 vendors page hides non-matching items entirely
+      allowFilter={false}
+      unavailable={unavailable}
       owned={owned}
+      locked={item.locked}
       acquired={acquired}
-      extraData={{ failureStrings: item.failureStrings, collectible, owned, acquired }}
+      extraData={{ failureStrings: item.failureStrings, characterId, owned, acquired, mod }}
     >
       {item.costs.length > 0 && (
-        <div className={styles.vendorCosts}>
+        <div>
           {item.costs.map((cost) => (
-            <VendorItemCost key={cost.itemHash} defs={defs} cost={cost} />
+            <Cost key={cost.itemHash} cost={cost} className={styles.cost} />
           ))}
         </div>
       )}
@@ -78,62 +80,55 @@ export default function VendorItemComponent({
 }
 
 export function VendorItemDisplay({
+  allowFilter,
   unavailable,
   owned,
+  locked,
   acquired,
   item,
   extraData,
   children,
 }: {
+  allowFilter?: boolean;
+  /** i.e. greyed out */
   unavailable?: boolean;
   owned?: boolean;
+  locked?: boolean;
   acquired?: boolean;
   item: DimItem;
   extraData?: ItemPopupExtraInfo;
   children?: React.ReactNode;
 }) {
-  const acquiredIcon = item.itemCategoryHashes.includes(ItemCategoryHashes.ArmorMods) ? (
-    <img src={helmetIcon} className={styles.attachedIcon} />
-  ) : item.itemCategoryHashes.includes(ItemCategoryHashes.WeaponMods) ? (
-    <img src={handCannonIcon} className={styles.attachedWeaponIcon} />
-  ) : (
-    <AppIcon className={styles.acquiredIcon} icon={faCheck} />
-  );
-
   return (
     <div
       className={clsx(styles.vendorItem, {
         [styles.unavailable]: unavailable,
       })}
     >
-      {owned ? <AppIcon className={styles.ownedIcon} icon={faCheck} /> : acquired && acquiredIcon}
       <ItemPopupTrigger item={item} extraData={extraData}>
         {(ref, onClick) => (
-          <ConnectedInventoryItem item={item} allowFilter={true} innerRef={ref} onClick={onClick} />
+          <ConnectedInventoryItem
+            item={item}
+            allowFilter={allowFilter ?? true}
+            ref={ref}
+            onClick={onClick}
+          />
         )}
       </ItemPopupTrigger>
       {children}
-    </div>
-  );
-}
-
-function VendorItemCost({
-  cost,
-  defs,
-}: {
-  defs: D2ManifestDefinitions;
-  cost: DestinyItemQuantity;
-}) {
-  const currencyItem = defs.InventoryItem.get(cost.itemHash);
-  return (
-    <div className={styles.cost}>
-      {cost.quantity}
-      <span className={styles.currency}>
-        <BungieImage
-          src={currencyItem.displayProperties.icon}
-          title={currencyItem.displayProperties.name}
-        />
-      </span>
+      {owned ? (
+        <AppIcon className={styles.ownedIcon} icon={faCheck} title={t('MovePopup.Owned')} />
+      ) : acquired ? (
+        <AppIcon className={styles.acquiredIcon} icon={faCheck} title={t('MovePopup.Acquired')} />
+      ) : (
+        locked && (
+          <AppIcon
+            className={styles.lockedIcon}
+            icon={lockIcon}
+            title={t('MovePopup.LockUnlock.Locked')}
+          />
+        )
+      )}
     </div>
   );
 }

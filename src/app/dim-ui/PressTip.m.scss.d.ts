@@ -3,7 +3,12 @@
 interface CssExports {
   'arrow': string;
   'content': string;
+  'control': string;
+  'header': string;
+  'minimalTooltip': string;
+  'section': string;
   'tooltip': string;
+  'wideTooltip': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

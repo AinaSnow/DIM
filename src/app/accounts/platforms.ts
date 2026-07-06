@@ -1,85 +1,80 @@
-import _ from 'lodash';
+import { loadDimApiData } from 'app/dim-api/actions';
+import { deleteDimApiToken } from 'app/dim-api/dim-api-helper';
+import { del, get } from 'app/storage/idb-keyval';
+import { ThunkResult } from 'app/store/types';
+import { convertToError } from 'app/utils/errors';
+import { errorLog } from 'app/utils/log';
+import { dedupePromise } from 'app/utils/promises';
+import { removeToken } from '../bungie-api/oauth-tokens';
+import { loadingTracker } from '../shell/loading-tracker';
+import * as actions from './actions';
+import { getBungieAccount } from './bungie-account';
 import {
-  compareAccounts,
   DestinyAccount,
+  compareAccounts,
   getDestinyAccountsForBungieAccount,
 } from './destiny-account';
-import { getBungieAccount } from './bungie-account';
-import * as actions from './actions';
-import { loadingTracker } from '../shell/loading-tracker';
-import { goToLoginPage } from '../bungie-api/authenticated-fetch';
-import { accountsSelector, currentAccountSelector, accountsLoadedSelector } from './selectors';
-import { ThunkResult } from 'app/store/types';
-import { dedupePromise } from 'app/utils/util';
-import { removeToken } from '../bungie-api/oauth-tokens';
-import { deleteDimApiToken } from 'app/dim-api/dim-api-helper';
-import { del, get } from 'idb-keyval';
+import { accountsLoadedSelector, accountsSelector, currentAccountSelector } from './selectors';
 
 const loadAccountsFromIndexedDBAction: ThunkResult = dedupePromise(async (dispatch) => {
-  console.log('Load accounts from IDB');
   const accounts = await get<DestinyAccount[] | undefined>('accounts');
-
   dispatch(actions.loadFromIDB(accounts || []));
 });
 
-const getPlatformsAction: ThunkResult<readonly DestinyAccount[]> = dedupePromise(
-  async (dispatch, getState) => {
-    let realAccountsPromise: Promise<readonly DestinyAccount[]> | null = null;
-    if (!getState().accounts.loaded) {
-      // Kick off a load from bungie.net in the background
-      realAccountsPromise = dispatch(loadAccountsFromBungieNet());
-    }
-
-    if (!getState().accounts.loadedFromIDB) {
-      try {
-        await dispatch(loadAccountsFromIndexedDBAction);
-      } catch (e) {
-        console.error('Unable to load accounts from IDB', e);
-      }
-    }
-
-    if (!accountsLoadedSelector(getState()) && realAccountsPromise) {
-      // Fall back to Bungie.net
-      try {
-        await realAccountsPromise;
-      } catch (e) {
-        dispatch(actions.error(e));
-        console.error('Unable to load accounts from Bungie.net', e);
-      }
-    }
-
-    // Whatever we've got at this point is the answer
-    const platform = await dispatch(loadActivePlatform());
-    dispatch(setActivePlatform(platform));
-    return accountsSelector(getState());
+/**
+ * Load data about available accounts.
+ */
+export const getPlatforms: ThunkResult = dedupePromise(async (dispatch, getState) => {
+  let realAccountsPromise: Promise<readonly DestinyAccount[]> | null = null;
+  if (!getState().accounts.loaded) {
+    // Kick off a load from bungie.net in the background
+    realAccountsPromise = dispatch(loadAccountsFromBungieNet());
   }
-);
 
-export function getPlatforms(): ThunkResult<readonly DestinyAccount[]> {
-  return getPlatformsAction;
-}
+  if (!getState().accounts.loadedFromIDB) {
+    try {
+      await dispatch(loadAccountsFromIndexedDBAction);
+    } catch (e) {
+      errorLog('accounts', 'Unable to load accounts from IDB', e);
+    }
+  }
+
+  if (!accountsLoadedSelector(getState()) && realAccountsPromise) {
+    // Fall back to Bungie.net
+    try {
+      await realAccountsPromise;
+    } catch (e) {
+      dispatch(actions.error(convertToError(e)));
+      errorLog('accounts', 'Unable to load accounts from Bungie.net', e);
+    }
+  }
+});
 
 const loadAccountsFromBungieNetAction: ThunkResult<readonly DestinyAccount[]> = dedupePromise(
   async (dispatch): Promise<readonly DestinyAccount[]> => {
     const bungieAccount = getBungieAccount();
     if (!bungieAccount) {
       // We're not logged in, don't bother
-      goToLoginPage();
+      dispatch(actions.loggedOut());
       return [];
     }
 
     const membershipId = bungieAccount.membershipId;
-    const accounts = await loadingTracker.addPromise(dispatch(loadPlatforms(membershipId)));
-    return accounts;
-  }
+    return loadingTracker.addPromise(dispatch(loadPlatforms(membershipId)));
+  },
 );
 
 function loadAccountsFromBungieNet(): ThunkResult<readonly DestinyAccount[]> {
   return loadAccountsFromBungieNetAction;
 }
 
+/**
+ * Switch the current account to the given account. Lots of things depend on the current account
+ * to calculate their info. This also saves information about the last used account so we can restore
+ * it next time. This should be called when switching accounts or navigating to an account-specific page.
+ */
 export function setActivePlatform(
-  account: DestinyAccount | undefined
+  account: DestinyAccount | undefined,
 ): ThunkResult<DestinyAccount | undefined> {
   return async (dispatch, getState) => {
     if (account) {
@@ -88,6 +83,7 @@ export function setActivePlatform(
         localStorage.setItem('dim-last-membership-id', account.membershipId);
         localStorage.setItem('dim-last-destiny-version', account.destinyVersion.toString());
         dispatch(actions.setCurrentAccount(account));
+        dispatch(loadDimApiData());
       }
     }
     return account;
@@ -101,36 +97,11 @@ function loadPlatforms(membershipId: string): ThunkResult<readonly DestinyAccoun
       dispatch(actions.accountsLoaded(destinyAccounts));
     } catch (e) {
       if (!accountsSelector(getState()).length) {
+        dispatch(actions.handleAuthErrors(e));
         throw e;
       }
     }
-    const destinyAccounts = accountsSelector(getState());
-    return destinyAccounts;
-  };
-}
-
-function loadActivePlatform(): ThunkResult<DestinyAccount | undefined> {
-  return async (_dispatch, getState) => {
-    const account = currentAccountSelector(getState());
-    if (account) {
-      return account;
-    }
-
-    const accounts = accountsSelector(getState());
-    if (!accounts.length) {
-      return undefined;
-    }
-
-    const membershipId = localStorage.getItem('dim-last-membership-id');
-    const destinyVersionStr = localStorage.getItem('dim-last-destiny-version');
-    const destinyVersion = destinyVersionStr ? parseInt(destinyVersionStr, 10) : 2;
-
-    const active = accounts.find(
-      (account) =>
-        account.membershipId === membershipId && account.destinyVersion === destinyVersion
-    );
-
-    return active ?? _.maxBy(accounts, (account) => account.lastPlayed);
+    return accountsSelector(getState());
   };
 }
 
@@ -138,7 +109,10 @@ export function logOut(): ThunkResult {
   return async (dispatch) => {
     removeToken();
     deleteDimApiToken();
+    localStorage.removeItem('dim-last-membership-id');
+    localStorage.removeItem('dim-last-destiny-version');
     del('accounts'); // remove saved accounts from IDB
-    dispatch(actions.loggedOut(true));
+
+    dispatch(actions.loggedOut());
   };
 }

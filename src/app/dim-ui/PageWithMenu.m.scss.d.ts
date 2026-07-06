@@ -5,8 +5,8 @@ interface CssExports {
   'menu': string;
   'menuButton': string;
   'menuHeader': string;
+  'menuScrollbars': string;
   'page': string;
-  'withEngram': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

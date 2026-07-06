@@ -1,39 +1,15 @@
-import React, { useMemo } from 'react';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import _ from 'lodash';
-import styles from './ItemTypeSelector.m.scss';
+import { DestinyVersion } from '@destinyitemmanager/dim-api-types';
+import BucketIcon from 'app/dim-ui/svgs/BucketIcon';
+import { getClassTypeNameLocalized } from 'app/inventory/store/d2-item-factory';
+import { useDefinitions } from 'app/manifest/selectors';
+import { filteredItemsSelector } from 'app/search/items/item-search-filter';
+import { count } from 'app/utils/collections';
+import { LookupTable } from 'app/utils/util-types';
+import { DestinyClass } from 'bungie-api-ts/destiny2';
 import clsx from 'clsx';
-
-import autoRifle from 'destiny-icons/weapons/auto_rifle.svg';
-import bow from 'destiny-icons/weapons/bow.svg';
-import fusionRifle from 'destiny-icons/weapons/fusion_rifle.svg';
-import gLauncher from 'destiny-icons/weapons/grenade_launcher.svg';
-import handCannon from 'destiny-icons/weapons/hand_cannon.svg';
-import lFusionRifle from 'destiny-icons/weapons/wire_rifle.svg';
-import machinegun from 'destiny-icons/weapons/machinegun.svg';
-import pulseRifle from 'destiny-icons/weapons/pulse_rifle.svg';
-import rLauncher from 'destiny-icons/weapons/rocket_launcher.svg';
-import scoutRifle from 'destiny-icons/weapons/scout_rifle.svg';
-import shotgun from 'destiny-icons/weapons/shotgun.svg';
-import sidearm from 'destiny-icons/weapons/sidearm.svg';
-import smg from 'destiny-icons/weapons/smg.svg';
-import sniperRifle from 'destiny-icons/weapons/sniper_rifle.svg';
-import sword from 'destiny-icons/weapons/sword_heavy.svg';
-import traceRifle from 'destiny-icons/weapons/beam_weapon.svg';
-import helmet from '../../../destiny-icons/armor_types/helmet.svg';
-import gauntlets from '../../../destiny-icons/armor_types/gloves.svg';
-import chest from '../../../destiny-icons/armor_types/chest.svg';
-import legs from '../../../destiny-icons/armor_types/boots.svg';
-import classItem from '../../../destiny-icons/armor_types/class.svg';
-import titan from '../../../destiny-icons/general/class_titan.svg';
-import hunter from '../../../destiny-icons/general/class_hunter.svg';
-import warlock from '../../../destiny-icons/general/class_warlock.svg';
-import dmgKinetic from 'destiny-icons/weapons/damage_kinetic.svg';
-import energyWeapon from 'destiny-icons/general/energy_weapon.svg';
-import powerWeapon from 'destiny-icons/general/power_weapon.svg';
-import ghost from 'destiny-icons/general/ghost.svg';
-import { D1ManifestDefinitions } from 'app/destiny1/d1-definitions';
 import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import { useSelector } from 'react-redux';
+import * as styles from './ItemTypeSelector.m.scss';
 
 /**
  * Each branch of the drilldown options is represented by a SelectionTreeNode
@@ -42,363 +18,326 @@ import { ItemCategoryHashes } from 'data/d2/generated-enums';
  */
 export interface ItemCategoryTreeNode {
   id: string;
-  itemCategoryHash: number;
+  itemCategoryHash: ItemCategoryHashes | 0;
   subCategories?: ItemCategoryTreeNode[];
   /** A terminal node can have items displayed for it. It may still have other drilldowns available. */
   terminal?: boolean;
-  icon?: string;
 }
 
-const armorHashes = {
-  45: helmet,
-  46: gauntlets,
-  47: chest,
-  48: legs,
-  49: classItem,
+// Each class has the same armor
+const armorCategories = [
+  {
+    id: 'helmet',
+    itemCategoryHash: ItemCategoryHashes.Helmets,
+    terminal: true,
+  },
+  {
+    id: 'arms',
+    itemCategoryHash: ItemCategoryHashes.Arms,
+    terminal: true,
+  },
+  {
+    id: 'chest',
+    itemCategoryHash: ItemCategoryHashes.Chest,
+    terminal: true,
+  },
+  {
+    id: 'legs',
+    itemCategoryHash: ItemCategoryHashes.Legs,
+    terminal: true,
+  },
+  {
+    id: 'classItem',
+    itemCategoryHash: ItemCategoryHashes.ClassItems,
+    terminal: true,
+  },
+];
+
+// Each weapon type may be in several subcategories
+const kinetic: ItemCategoryTreeNode = {
+  id: 'kinetic',
+  itemCategoryHash: ItemCategoryHashes.KineticWeapon,
+  terminal: true,
+};
+const energy: ItemCategoryTreeNode = {
+  id: 'energy',
+  itemCategoryHash: ItemCategoryHashes.EnergyWeapon,
+  terminal: true,
+};
+const power: ItemCategoryTreeNode = {
+  id: 'power',
+  itemCategoryHash: ItemCategoryHashes.PowerWeapon,
+  terminal: true,
 };
 
 /**
  * Generate a tree of all the drilldown options for item filtering. This tree is
  * used to generate the list of selected subcategories.
  */
-export const getD2SelectionTree = (defs: D2ManifestDefinitions): ItemCategoryTreeNode => {
-  const armorCategory = defs.ItemCategory.get(ItemCategoryHashes.Armor);
+const d2SelectionTree: ItemCategoryTreeNode = {
+  id: 'all',
+  itemCategoryHash: 0,
+  subCategories: [
+    {
+      id: 'weapons',
+      itemCategoryHash: ItemCategoryHashes.Weapon,
+      terminal: true,
 
-  // Each class has the same armor
-  const armorCategories = armorCategory.groupedCategoryHashes.map(
-    (categoryHash): ItemCategoryTreeNode => {
-      const category = defs.ItemCategory.get(categoryHash);
-      return {
-        id: category.originBucketIdentifier,
-        itemCategoryHash: categoryHash,
-        terminal: true,
-        icon: armorHashes[categoryHash],
-      };
-    }
-  );
-
-  // Each weapon type may be in several subcategories
-  const kinetic: ItemCategoryTreeNode = {
-    id: 'kinetic',
-    itemCategoryHash: 2,
-    terminal: true,
-    icon: dmgKinetic,
-  };
-  const energy: ItemCategoryTreeNode = {
-    id: 'energy',
-    itemCategoryHash: 3,
-    terminal: true,
-    icon: energyWeapon,
-  };
-  const power: ItemCategoryTreeNode = {
-    id: 'power',
-    itemCategoryHash: 4,
-    terminal: true,
-    icon: powerWeapon,
-  };
-
-  return {
-    id: 'all',
-    itemCategoryHash: 0,
-    subCategories: [
-      {
-        id: 'weapons',
-        itemCategoryHash: 1,
-        icon: handCannon,
-        subCategories: [
-          {
-            id: 'autorifle',
-            itemCategoryHash: 5,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: autoRifle,
-          },
-          {
-            id: 'handcannon',
-            itemCategoryHash: 6,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: handCannon,
-          },
-          {
-            id: 'pulserifle',
-            itemCategoryHash: 7,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: pulseRifle,
-          },
-          {
-            id: 'scoutrifle',
-            itemCategoryHash: 8,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: scoutRifle,
-          },
-          {
-            id: 'sidearm',
-            itemCategoryHash: 14,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: sidearm,
-          },
-          {
-            id: 'bow',
-            itemCategoryHash: 3317538576,
-            subCategories: [kinetic, energy, power],
-            terminal: true,
-            icon: bow,
-          },
-          {
-            id: 'submachine',
-            itemCategoryHash: 3954685534,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: smg,
-          },
-          {
-            id: 'fusionrifle',
-            itemCategoryHash: 9,
-            subCategories: [energy, power],
-            terminal: true,
-            icon: fusionRifle,
-          },
-          {
-            id: 'sniperrifle',
-            itemCategoryHash: 10,
-            subCategories: [kinetic, energy, power],
-            terminal: true,
-            icon: sniperRifle,
-          },
-          {
-            id: 'shotgun',
-            itemCategoryHash: 11,
-            subCategories: [kinetic, energy, power],
-            terminal: true,
-            icon: shotgun,
-          },
-          {
-            id: 'tracerifle',
-            itemCategoryHash: 2489664120,
-            subCategories: [kinetic, energy],
-            terminal: true,
-            icon: traceRifle,
-          },
-          {
-            id: 'machinegun',
-            itemCategoryHash: 12,
-            terminal: true,
-            icon: machinegun,
-          },
-          {
-            id: 'sword',
-            itemCategoryHash: 54,
-            terminal: true,
-            icon: sword,
-          },
-          {
-            id: 'grenadelauncher',
-            itemCategoryHash: 153950757,
-            subCategories: [kinetic, energy, power],
-            terminal: true,
-            icon: gLauncher,
-          },
-          {
-            id: 'rocketlauncher',
-            itemCategoryHash: 13,
-            terminal: true,
-            icon: rLauncher,
-          },
-          {
-            id: 'linearfusionrifle',
-            itemCategoryHash: 1504945536,
-            subCategories: [kinetic, power],
-            terminal: true,
-            icon: lFusionRifle,
-          },
-        ],
-      },
-      {
-        id: 'hunter',
-        itemCategoryHash: 23,
-        subCategories: armorCategories,
-        icon: hunter,
-      },
-      {
-        id: 'titan',
-        itemCategoryHash: 22,
-        subCategories: armorCategories,
-        icon: titan,
-      },
-      {
-        id: 'warlock',
-        itemCategoryHash: 21,
-        subCategories: armorCategories,
-        icon: warlock,
-      },
-      {
-        id: 'ghosts',
-        itemCategoryHash: 39,
-        icon: ghost,
-        terminal: true,
-      },
-    ],
-  };
+      subCategories: [
+        {
+          id: 'autorifle',
+          itemCategoryHash: ItemCategoryHashes.AutoRifle,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'handcannon',
+          itemCategoryHash: ItemCategoryHashes.HandCannon,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'pulserifle',
+          itemCategoryHash: ItemCategoryHashes.PulseRifle,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'scoutrifle',
+          itemCategoryHash: ItemCategoryHashes.ScoutRifle,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'sidearm',
+          itemCategoryHash: ItemCategoryHashes.Sidearm,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'bow',
+          itemCategoryHash: ItemCategoryHashes.Bows,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+        {
+          id: 'submachine',
+          itemCategoryHash: ItemCategoryHashes.SubmachineGuns,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'fusionrifle',
+          itemCategoryHash: ItemCategoryHashes.FusionRifle,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+        {
+          id: 'sniperrifle',
+          itemCategoryHash: ItemCategoryHashes.SniperRifle,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+        {
+          id: 'shotgun',
+          itemCategoryHash: ItemCategoryHashes.Shotgun,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+        {
+          id: 'specialgrenadelauncher',
+          itemCategoryHash: -ItemCategoryHashes.GrenadeLaunchers,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'tracerifle',
+          itemCategoryHash: ItemCategoryHashes.TraceRifles,
+          subCategories: [kinetic, energy],
+          terminal: true,
+        },
+        {
+          id: 'glaive',
+          itemCategoryHash: ItemCategoryHashes.Glaives,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+        {
+          id: 'machinegun',
+          itemCategoryHash: ItemCategoryHashes.MachineGun,
+          terminal: true,
+        },
+        {
+          id: 'sword',
+          itemCategoryHash: ItemCategoryHashes.Sword,
+          terminal: true,
+        },
+        {
+          id: 'heavygrenadelauncher',
+          itemCategoryHash: ItemCategoryHashes.GrenadeLaunchers,
+          subCategories: [power],
+          terminal: true,
+        },
+        {
+          id: 'rocketlauncher',
+          itemCategoryHash: ItemCategoryHashes.RocketLauncher,
+          terminal: true,
+        },
+        {
+          id: 'linearfusionrifle',
+          itemCategoryHash: ItemCategoryHashes.LinearFusionRifles,
+          subCategories: [kinetic, energy, power],
+          terminal: true,
+        },
+      ],
+    },
+    {
+      id: 'hunter',
+      itemCategoryHash: ItemCategoryHashes.Hunter,
+      subCategories: armorCategories,
+      terminal: true,
+    },
+    {
+      id: 'titan',
+      itemCategoryHash: ItemCategoryHashes.Titan,
+      subCategories: armorCategories,
+      terminal: true,
+    },
+    {
+      id: 'warlock',
+      itemCategoryHash: ItemCategoryHashes.Warlock,
+      subCategories: armorCategories,
+      terminal: true,
+    },
+    {
+      id: 'ghosts',
+      itemCategoryHash: ItemCategoryHashes.Ghost,
+      terminal: true,
+    },
+  ],
 };
+
+// Each class has the same armor
+const d1ArmorCategories = [
+  ...armorCategories,
+  {
+    id: 'artifacts',
+    itemCategoryHash: 38,
+    terminal: true,
+  },
+];
 
 /**
  * Generate a tree of all the drilldown options for item filtering. This tree is
  * used to generate the list of selected subcategories.
  */
-export const getD1SelectionTree = (): ItemCategoryTreeNode => {
-  // Each class has the same armor
-  const armorCategories = [
+const d1SelectionTree: ItemCategoryTreeNode = {
+  id: 'all',
+  itemCategoryHash: 0,
+  subCategories: [
     {
-      id: 'helmets',
-      itemCategoryHash: 45,
-      terminal: true,
-      icon: helmet,
-    },
-    {
-      id: 'gauntlets',
-      itemCategoryHash: 46,
-      terminal: true,
-      icon: gauntlets,
-    },
-    {
-      id: 'chests',
-      itemCategoryHash: 47,
-      terminal: true,
-      icon: chest,
-    },
-    {
-      id: 'legs',
-      itemCategoryHash: 48,
-      terminal: true,
-      icon: legs,
-    },
-    {
-      id: 'classItems',
-      itemCategoryHash: 49,
-      terminal: true,
-      icon: classItem,
-    },
-    {
-      id: 'artifacts',
-      itemCategoryHash: 38,
-      terminal: true,
-    },
-  ];
+      id: 'weapons',
+      itemCategoryHash: ItemCategoryHashes.Weapon,
 
-  return {
-    id: 'all',
-    itemCategoryHash: 0,
-    subCategories: [
-      {
-        id: 'weapons',
-        itemCategoryHash: 1,
-        icon: handCannon,
-        subCategories: [
-          {
-            id: 'autorifle',
-            itemCategoryHash: 5,
-            terminal: true,
-            icon: autoRifle,
-          },
-          {
-            id: 'handcannon',
-            itemCategoryHash: 6,
-            terminal: true,
-            icon: handCannon,
-          },
-          {
-            id: 'pulserifle',
-            itemCategoryHash: 7,
-            terminal: true,
-            icon: pulseRifle,
-          },
-          {
-            id: 'scoutrifle',
-            itemCategoryHash: 8,
-            terminal: true,
-            icon: scoutRifle,
-          },
-          {
-            id: 'fusionrifle',
-            itemCategoryHash: 9,
-            terminal: true,
-            icon: fusionRifle,
-          },
-          {
-            id: 'sniperrifle',
-            itemCategoryHash: 10,
-            terminal: true,
-            icon: sniperRifle,
-          },
-          {
-            id: 'shotgun',
-            itemCategoryHash: 11,
-            terminal: true,
-            icon: shotgun,
-          },
-          {
-            id: 'machinegun',
-            itemCategoryHash: 12,
-            terminal: true,
-            icon: machinegun,
-          },
-          {
-            id: 'rocketlauncher',
-            itemCategoryHash: 13,
-            terminal: true,
-            icon: rLauncher,
-          },
-          {
-            id: 'sidearm',
-            itemCategoryHash: 14,
-            terminal: true,
-            icon: sidearm,
-          },
-          {
-            id: 'sword',
-            itemCategoryHash: 54,
-            terminal: true,
-            icon: sword,
-          },
-        ],
-      },
-      {
-        id: 'armor',
-        itemCategoryHash: 20,
-        icon: helmet,
-        subCategories: [
-          {
-            id: 'hunter',
-            itemCategoryHash: 23,
-            subCategories: armorCategories,
-            icon: hunter,
-          },
-          {
-            id: 'titan',
-            itemCategoryHash: 22,
-            subCategories: armorCategories,
-            icon: titan,
-          },
-          {
-            id: 'warlock',
-            itemCategoryHash: 21,
-            subCategories: armorCategories,
-            icon: warlock,
-          },
-        ],
-      },
-      {
-        id: 'ghosts',
-        itemCategoryHash: 39,
-        icon: ghost,
-        terminal: true,
-      },
-    ],
-  };
+      subCategories: [
+        {
+          id: 'autorifle',
+          itemCategoryHash: ItemCategoryHashes.AutoRifle,
+          terminal: true,
+        },
+        {
+          id: 'handcannon',
+          itemCategoryHash: ItemCategoryHashes.HandCannon,
+          terminal: true,
+        },
+        {
+          id: 'pulserifle',
+          itemCategoryHash: ItemCategoryHashes.PulseRifle,
+          terminal: true,
+        },
+        {
+          id: 'scoutrifle',
+          itemCategoryHash: ItemCategoryHashes.ScoutRifle,
+          terminal: true,
+        },
+        {
+          id: 'fusionrifle',
+          itemCategoryHash: ItemCategoryHashes.FusionRifle,
+          terminal: true,
+        },
+        {
+          id: 'sniperrifle',
+          itemCategoryHash: ItemCategoryHashes.SniperRifle,
+          terminal: true,
+        },
+        {
+          id: 'shotgun',
+          itemCategoryHash: ItemCategoryHashes.Shotgun,
+          terminal: true,
+        },
+        {
+          id: 'machinegun',
+          itemCategoryHash: ItemCategoryHashes.MachineGun,
+          terminal: true,
+        },
+        {
+          id: 'rocketlauncher',
+          itemCategoryHash: ItemCategoryHashes.RocketLauncher,
+          terminal: true,
+        },
+        {
+          id: 'sidearm',
+          itemCategoryHash: ItemCategoryHashes.Sidearm,
+          terminal: true,
+        },
+        {
+          id: 'sword',
+          itemCategoryHash: ItemCategoryHashes.Sword,
+          terminal: true,
+        },
+      ],
+    },
+    {
+      id: 'hunter',
+      itemCategoryHash: ItemCategoryHashes.Hunter,
+      subCategories: d1ArmorCategories,
+    },
+    {
+      id: 'titan',
+      itemCategoryHash: ItemCategoryHashes.Titan,
+      subCategories: d1ArmorCategories,
+    },
+    {
+      id: 'warlock',
+      itemCategoryHash: ItemCategoryHashes.Warlock,
+      subCategories: d1ArmorCategories,
+    },
+    {
+      id: 'ghosts',
+      itemCategoryHash: ItemCategoryHashes.Ghost,
+
+      terminal: true,
+    },
+  ],
+};
+
+export function getSelectionTree(destinyVersion: DestinyVersion) {
+  return destinyVersion === 2 ? d2SelectionTree : d1SelectionTree;
+}
+
+export const armorTopLevelCatHashes: ItemCategoryHashes[] = [
+  ItemCategoryHashes.Hunter,
+  ItemCategoryHashes.Titan,
+  ItemCategoryHashes.Warlock,
+];
+
+// Class armor categories have their own ItemCategory definitions, but those names
+// can be mistranslated (zh-cht renders the "Titan" category as the destination, not
+// the class). Use the Class definition's name instead, matching the rest of the app.
+const classCategoryToClass: LookupTable<ItemCategoryHashes, DestinyClass> = {
+  [ItemCategoryHashes.Hunter]: DestinyClass.Hunter,
+  [ItemCategoryHashes.Titan]: DestinyClass.Titan,
+  [ItemCategoryHashes.Warlock]: DestinyClass.Warlock,
 };
 
 /**
@@ -406,52 +345,84 @@ export const getD1SelectionTree = (): ItemCategoryTreeNode => {
  * (hunter helmets, hand cannons, etc.) for the Organizer table.
  */
 export default function ItemTypeSelector({
-  defs,
+  selectionTree,
   selection,
   onSelection,
 }: {
-  defs: D2ManifestDefinitions | D1ManifestDefinitions;
+  selectionTree: ItemCategoryTreeNode;
   selection: ItemCategoryTreeNode[];
-  onSelection(selection: ItemCategoryTreeNode[]): void;
+  onSelection: (selection: ItemCategoryTreeNode[]) => void;
 }) {
-  const types = useMemo(
-    () => (defs.isDestiny2() ? getD2SelectionTree(defs) : getD1SelectionTree()),
-    [defs]
-  );
-  selection = selection.length ? selection : [types];
+  const defs = useDefinitions()!;
+  const filteredItems = useSelector(filteredItemsSelector);
+  selection = selection.length ? selection : [selectionTree];
 
   const handleSelection = (depth: number, subCategory: ItemCategoryTreeNode) =>
-    onSelection([..._.take(selection, depth + 1), subCategory]);
+    onSelection([...selection.slice(0, depth + 1), subCategory]);
 
   return (
     <div className={styles.selector}>
-      {selection.map(
-        (currentSelection, depth) =>
+      {selection.map((currentSelection, depth) => {
+        const upstreamCategories: number[] = [];
+        for (let i = 1; i < depth + 1; i++) {
+          selection[i].itemCategoryHash && upstreamCategories.push(selection[i].itemCategoryHash);
+        }
+        return (
           currentSelection.subCategories && (
             <div key={depth} className={styles.level}>
-              {currentSelection.subCategories?.map((subCategory) => (
-                <label
-                  key={subCategory.itemCategoryHash}
-                  className={clsx(styles.button, {
-                    [styles.checked]: selection[depth + 1] === subCategory,
-                  })}
-                >
-                  <input
-                    type="radio"
-                    name={subCategory.id}
-                    value={subCategory.id}
-                    checked={selection[depth + 1] === subCategory}
-                    readOnly={true}
-                    onClick={(_e) => handleSelection(depth, subCategory)}
-                  />
-                  {subCategory.icon && <img src={subCategory.icon} />}
-                  {defs.ItemCategory.get(subCategory.itemCategoryHash).displayProperties?.name ||
-                    defs.ItemCategory.get(subCategory.itemCategoryHash).title}
-                </label>
-              ))}
+              {currentSelection.subCategories?.map((subCategory) => {
+                const categoryHashList = [...upstreamCategories, subCategory.itemCategoryHash];
+
+                // a top level class-specific category implies armor
+                if (armorTopLevelCatHashes.some((h) => categoryHashList.includes(h))) {
+                  categoryHashList.push(ItemCategoryHashes.Armor);
+                }
+
+                const itemCategory = defs.ItemCategory.get(Math.abs(subCategory.itemCategoryHash));
+                const classType =
+                  classCategoryToClass[subCategory.itemCategoryHash as ItemCategoryHashes];
+                const categoryName =
+                  classType !== undefined && defs.isDestiny2
+                    ? getClassTypeNameLocalized(defs)(classType)
+                    : 'displayProperties' in itemCategory
+                      ? itemCategory.displayProperties.name
+                      : itemCategory.title;
+                return (
+                  <label
+                    key={subCategory.itemCategoryHash}
+                    className={clsx('dim-button', {
+                      selected: selection[depth + 1] === subCategory,
+                    })}
+                  >
+                    <input
+                      type="radio"
+                      name={subCategory.id}
+                      value={subCategory.id}
+                      checked={selection[depth + 1] === subCategory}
+                      readOnly={true}
+                      onClick={(_e) => handleSelection(depth, subCategory)}
+                    />
+                    {subCategory.itemCategoryHash !== 0 && (
+                      <BucketIcon itemCategoryHash={subCategory.itemCategoryHash} />
+                    )}
+                    {categoryName}{' '}
+                    <span className={styles.buttonItemCount}>
+                      (
+                      {count(
+                        filteredItems,
+                        (i) =>
+                          i.comparable &&
+                          categoryHashList.every((h) => i.itemCategoryHashes.includes(h)),
+                      )}
+                      )
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           )
-      )}
+        );
+      })}
     </div>
   );
 }

@@ -1,138 +1,128 @@
-import React from 'react';
-import './loadout-builder.scss';
-import { D1Item } from '../../inventory/item-types';
-import { SetType, ArmorSet } from './types';
-import _ from 'lodash';
-import { DimStore } from '../../inventory/store-types';
 import { t } from 'app/i18next-t';
-import LoadoutBuilderItem from './LoadoutBuilderItem';
-import { AppIcon, faMinusSquare, faPlusSquare } from '../../shell/icons';
-import CharacterStats from '../../store-stats/CharacterStats';
+import { findItemsByBucket } from 'app/inventory/stores-helpers';
+import { applyLoadout } from 'app/loadout-drawer/loadout-apply';
+import { editLoadout } from 'app/loadout-drawer/loadout-events';
+import { Loadout } from 'app/loadout/loadout-types';
+import { D1CharacterStats } from 'app/store-stats/D1CharacterStats';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { filterMap } from 'app/utils/collections';
+import { BucketHashes } from 'data/d2/generated-enums';
+import { useState } from 'react';
+import { D1Item } from '../../inventory/item-types';
+import { DimStore } from '../../inventory/store-types';
 import ItemTalentGrid from '../../item-popup/ItemTalentGrid';
-import { newLoadout, convertToLoadoutItem } from '../../loadout/loadout-utils';
-import { editLoadout } from 'app/loadout/LoadoutDrawer';
-import { applyLoadout } from 'app/loadout/loadout-apply';
+import { convertToLoadoutItem, newLoadout } from '../../loadout-drawer/loadout-utils';
+import { AppIcon, faMinusSquare, faPlusSquare } from '../../shell/icons';
+import { d1ArmorTypes } from './D1LoadoutBuilder';
+import * as styles from './GeneratedSet.m.scss';
+import LoadoutBuilderItem from './LoadoutBuilderItem';
+import { ArmorSet, ArmorTypes, SetType } from './types';
 
 interface Props {
   store: DimStore;
   setType: SetType;
   activesets: string;
-  excludeItem(item: D1Item): void;
+  excludeItem: (item: D1Item) => void;
 }
 
-interface State {
-  collapsed: boolean;
-}
+export default function GeneratedSet({ setType, store, activesets, excludeItem }: Props) {
+  const [collapsed, setCollapsed] = useState(true);
+  const dispatch = useThunkDispatch();
+  const subclass = findItemsByBucket(store, BucketHashes.Subclass).find((i) => i.equipped);
 
-export default class GeneratedSet extends React.Component<Props, State> {
-  state: State = { collapsed: true };
-  render() {
-    const { setType, store, activesets, excludeItem } = this.props;
-    const { collapsed } = this.state;
+  const toggle = () => setCollapsed((collapsed) => !collapsed);
 
-    return (
-      <div key={setType.set.setHash} className="section loadout">
-        <div className="loadout-builder-controls">
-          {setType.set.includesVendorItems ? (
-            <span>{t('LB.ContainsVendorItems')}</span>
-          ) : (
-            <>
-              <span className="dim-button" onClick={() => this.newLoadout(setType.set)}>
-                {t('Loadouts.Create')}
-              </span>
-              <span
-                className="dim-button equip-button"
-                onClick={() => this.equipItems(setType.set)}
-              >
-                {t('LB.Equip', { character: store.name })}
-              </span>
-            </>
-          )}{' '}
-          <div className="dim-stats">
-            <CharacterStats destinyVersion={1} stats={setType.tiers[activesets].stats} />
-          </div>
-        </div>
-        <div className="loadout-builder-section">
-          {_.map(setType.set.armor, (armorpiece, type) => (
-            <div key={type} className="set-item">
-              <LoadoutBuilderItem shiftClickCallback={excludeItem} item={armorpiece.item} />
-              <div className="smaller">
-                <ItemTalentGrid item={armorpiece.item} perksOnly={true} />
-              </div>
-              <div className="label">
-                <small>
-                  {setType.tiers[activesets].configs[0][armorpiece.item.type] === 'int'
-                    ? t('Stats.Intellect')
-                    : setType.tiers[activesets].configs[0][armorpiece.item.type] === 'dis'
-                    ? t('Stats.Discipline')
-                    : setType.tiers[activesets].configs[0][armorpiece.item.type] === 'str'
-                    ? t('Stats.Strength')
-                    : t('Stats.NoBonus')}
-                </small>
-              </div>
-              {setType.tiers[activesets].configs.map(
-                (config, i) =>
-                  i > 0 &&
-                  !collapsed && (
-                    <div key={i} className="other-configs">
-                      <small>
-                        {config[armorpiece.item.type] === 'int'
-                          ? t('Stats.Intellect')
-                          : config[armorpiece.item.type] === 'dis'
-                          ? t('Stats.Discipline')
-                          : config[armorpiece.item.type] === 'str'
-                          ? t('Stats.Strength')
-                          : t('Stats.NoBonus')}
-                      </small>
-                    </div>
-                  )
-              )}
-            </div>
-          ))}
-        </div>
-        {setType.tiers[activesets].configs.length > 1 && (
-          <div className="expand-configs" onClick={this.toggle}>
-            {!collapsed ? (
-              <div>
-                <span title={t('LB.HideConfigs')}>
-                  <AppIcon icon={faMinusSquare} />
-                </span>{' '}
-                {t('LB.HideAllConfigs')}
-              </div>
-            ) : (
-              <div>
-                <span title={t('LB.ShowConfigs')}>
-                  <AppIcon icon={faPlusSquare} />
-                </span>{' '}
-                {t('LB.ShowAllConfigs')}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  private toggle = () => this.setState((state) => ({ collapsed: !state.collapsed }));
-
-  private makeLoadoutFromSet = (set: ArmorSet) => {
-    const items = Object.values(
-      _.pick(set.armor, 'Helmet', 'Chest', 'Gauntlets', 'Leg', 'ClassItem', 'Ghost', 'Artifact')
-    ).map((si) => si.item);
+  const makeLoadoutFromSet = (set: ArmorSet): Loadout => {
+    const items = filterMap(d1ArmorTypes, (bucketHash) => set.armor[bucketHash]?.item);
 
     const loadout = newLoadout(
       '',
-      items.map((i) => convertToLoadoutItem(i, true))
+      items.map((i) => convertToLoadoutItem(i, true)),
+      store.classType,
     );
-    loadout.classType = this.props.store.classType;
     return loadout;
   };
 
-  private newLoadout = (set: ArmorSet) => {
-    editLoadout(this.makeLoadoutFromSet(set), {
+  const makeNewLoadout = (set: ArmorSet) => {
+    editLoadout(makeLoadoutFromSet(set), store.id, {
       showClass: false,
     });
   };
-  private equipItems = (set: ArmorSet) =>
-    applyLoadout(this.props.store, this.makeLoadoutFromSet(set), true);
+  const equipItems = (set: ArmorSet) =>
+    dispatch(applyLoadout(store, makeLoadoutFromSet(set), { allowUndo: true }));
+
+  return (
+    <div key={setType.set.setHash} className={styles.loadout}>
+      <div className={styles.controls}>
+        {setType.set.includesVendorItems ? (
+          <span>{t('LB.ContainsVendorItems')}</span>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="dim-button"
+              onClick={() => makeNewLoadout(setType.set)}
+            >
+              {t('Loadouts.Create')}
+            </button>
+            <button type="button" className="dim-button" onClick={() => equipItems(setType.set)}>
+              {t('LB.Equip', { character: store.name })}
+            </button>
+          </>
+        )}
+        <div className={styles.dimStats}>
+          <D1CharacterStats stats={setType.tiers[activesets].stats} subclassHash={subclass?.hash} />
+        </div>
+      </div>
+      <div className={styles.set}>
+        {Object.entries(setType.set.armor).map(([type, armorpiece]) => {
+          const itemType: ArmorTypes = armorpiece.item.bucket.hash;
+          return (
+            <div key={type} className={styles.setItem}>
+              <LoadoutBuilderItem shiftClickCallback={excludeItem} item={armorpiece.item} />
+              <ItemTalentGrid
+                item={armorpiece.item}
+                className={styles.talentGrid}
+                perksOnly={true}
+              />
+              <ConfigLabel stat={setType.tiers[activesets].configs[0][itemType]} />
+              {!collapsed &&
+                setType.tiers[activesets].configs.map(
+                  (config, i) => i > 0 && <ConfigLabel key={i} stat={config[itemType]} />,
+                )}
+            </div>
+          );
+        })}
+      </div>
+      {setType.tiers[activesets].configs.length > 1 && (
+        <div className={styles.expandConfigs} onClick={toggle}>
+          {collapsed ? (
+            <>
+              <AppIcon icon={faPlusSquare} title={t('LB.ShowConfigs')} />
+              {t('LB.ShowAllConfigs')}
+            </>
+          ) : (
+            <>
+              <AppIcon icon={faMinusSquare} title={t('LB.HideConfigs')} />
+              {t('LB.HideAllConfigs')}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigLabel({ stat }: { stat: string | null }) {
+  return (
+    <div className={styles.label}>
+      {stat === 'int'
+        ? t('Stats.Intellect')
+        : stat === 'dis'
+          ? t('Stats.Discipline')
+          : stat === 'str'
+            ? t('Stats.Strength')
+            : t('Stats.NoBonus')}
+    </div>
+  );
 }

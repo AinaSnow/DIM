@@ -1,7 +1,17 @@
-import { D2Item, DimSockets, DimMasterwork } from '../item-types';
 import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import { DamageType } from 'bungie-api-ts/destiny2';
-import { PlugCategoryHashes } from 'data/d2/generated-enums';
+import { isEmpty } from 'app/utils/collections';
+import { isArmor3MasterworkSocket } from 'app/utils/item-utils';
+import { getFirstSocketByCategoryHash, isWeaponMasterworkSocket } from 'app/utils/socket-utils';
+import { DestinyInventoryItemDefinition } from 'bungie-api-ts/destiny2';
+import enhancedIntrinsics from 'data/d2/crafting-enhanced-intrinsics';
+import {
+  ItemCategoryHashes,
+  PlugCategoryHashes,
+  SocketCategoryHashes,
+  StatHashes,
+} from 'data/d2/generated-enums';
+import masterworksWithCondStats from 'data/d2/masterworks-with-cond-stats.json';
+import { DimItem, DimMasterwork, DimSockets } from '../item-types';
 
 /**
  * These are the utilities that deal with figuring out Masterwork info.
@@ -9,12 +19,7 @@ import { PlugCategoryHashes } from 'data/d2/generated-enums';
  * This is called from within d2-item-factory.service.ts
  */
 
-const resistanceMods = {
-  1546607977: DamageType.Kinetic,
-  1546607980: DamageType.Void,
-  1546607978: DamageType.Arc,
-  1546607979: DamageType.Thermal,
-};
+const maxTier = 10;
 
 /**
  * This builds the masterwork info - this isn't whether an item is masterwork, but instead what
@@ -22,143 +27,115 @@ const resistanceMods = {
  * kill trackers before they're masterworked.
  */
 export function buildMasterwork(
-  createdItem: D2Item,
-  defs: D2ManifestDefinitions
+  createdItem: DimItem,
+  defs: D2ManifestDefinitions,
 ): DimMasterwork | null {
   if (!createdItem.sockets) {
     return null;
   }
 
-  let masterworkInfo: DimMasterwork | null = null;
-
-  // Pre-Forsaken Masterwork
-  if (createdItem.masterwork) {
-    masterworkInfo = buildMasterworkInfo(createdItem.sockets, defs);
-  }
-
-  // Forsaken Masterwork
-  if (!masterworkInfo) {
-    masterworkInfo = buildForsakenMasterworkInfo(createdItem, defs);
-  }
-
-  return masterworkInfo;
+  return buildMasterworkInfo(createdItem, createdItem.sockets, defs);
 }
 
 /**
- * Post-Forsaken weapons store their masterwork info and kill tracker on different plugs.
- */
-function buildForsakenMasterworkInfo(
-  createdItem: D2Item,
-  defs: D2ManifestDefinitions
-): DimMasterwork | null {
-  const masterworkStats = buildForsakenMasterworkStats(createdItem, defs);
-  const killTracker = buildForsakenKillTracker(createdItem, defs);
-
-  // override stats values with killtracker if it's available
-  if (masterworkStats && killTracker) {
-    return { ...masterworkStats, ...killTracker };
-  }
-  return masterworkStats || killTracker || null;
-}
-
-function buildForsakenKillTracker(
-  createdItem: D2Item,
-  defs: D2ManifestDefinitions
-): DimMasterwork | null {
-  const killTrackerSocket = createdItem.sockets!.allSockets.find((socket) =>
-    Boolean(socket.plugged?.plugObjectives?.length)
-  );
-
-  if (killTrackerSocket?.plugged?.plugObjectives?.length) {
-    const plugObjective = killTrackerSocket.plugged.plugObjectives[0];
-
-    const objectiveDef = defs.Objective.get(plugObjective.objectiveHash);
-
-    return {
-      progress: plugObjective.progress,
-      typeIcon: objectiveDef.displayProperties.icon,
-      typeDesc: objectiveDef.progressDescription,
-      typeName: [3244015567, 2285636663, 38912240].includes(killTrackerSocket.plugged.plugDef.hash)
-        ? 'Crucible'
-        : 'Vanguard',
-    };
-  }
-  return null;
-}
-function buildForsakenMasterworkStats(
-  createdItem: D2Item,
-  defs: D2ManifestDefinitions
-): DimMasterwork | null {
-  const masterworkSocket = createdItem.sockets!.allSockets.find((socket) =>
-    Boolean(
-      socket.plugged?.plugDef.plug &&
-        (socket.plugged.plugDef.plug.plugCategoryIdentifier.includes('masterworks.stat') ||
-          socket.plugged.plugDef.plug.plugCategoryIdentifier.endsWith('_masterwork'))
-    )
-  );
-  if (masterworkSocket?.plugged?.plugDef.investmentStats.length) {
-    const masterwork = masterworkSocket.plugged.plugDef.investmentStats[0];
-    if (!createdItem.element && createdItem.bucket?.sort === 'Armor') {
-      createdItem.element =
-        Object.values(defs.DamageType).find(
-          (damageType) => damageType.enumValue === resistanceMods[masterwork.statTypeHash]
-        ) ?? null;
-    }
-
-    return {
-      typeName: null,
-      typeIcon: masterworkSocket.plugged.plugDef.displayProperties.icon,
-      typeDesc: masterworkSocket.plugged.plugDef.displayProperties.description,
-      tier: masterwork.value,
-      stats: [
-        {
-          hash: masterwork.statTypeHash,
-          name: defs.Stat.get(masterwork.statTypeHash).displayProperties.name,
-          value: masterworkSocket.plugged.stats?.[masterwork.statTypeHash] || 0,
-        },
-      ],
-    };
-  }
-  return null;
-}
-
-/**
- * Pre-Forsaken weapons store their masterwork info on an objective of a plug.
+ * Figure out what tier the masterwork is at, if any, and what stats are affected.
  */
 function buildMasterworkInfo(
+  createdItem: DimItem,
   sockets: DimSockets,
-  defs: D2ManifestDefinitions
+  defs: D2ManifestDefinitions,
 ): DimMasterwork | null {
-  const socket = sockets.allSockets.find((socket) =>
-    Boolean(socket.plugged?.plugObjectives.length)
-  );
-  if (!socket?.plugged?.plugObjectives?.length) {
-    return null;
-  }
-  const plugObjective = socket.plugged.plugObjectives[0];
-  const investmentStats = socket.plugged.plugDef.investmentStats;
-  const objectiveDef = defs.Objective.get(plugObjective.objectiveHash);
+  // For crafted weapons, the enhanced intrinsic provides masterwork-like stats
+  let masterworkPlug =
+    (createdItem.crafted &&
+      getFirstSocketByCategoryHash(sockets, SocketCategoryHashes.IntrinsicTraits)?.plugged) ||
+    sockets.allSockets.find(isWeaponMasterworkSocket)?.plugged;
 
-  if (!investmentStats?.length || !objectiveDef) {
-    return null;
+  // Look for the Edge of Fate masterwork socket
+  if (!masterworkPlug && createdItem.bucket.inArmor) {
+    masterworkPlug = createdItem.sockets?.allSockets.find(isArmor3MasterworkSocket)?.plugged;
   }
 
-  const stats = investmentStats.map((stat) => ({
-    hash: stat.statTypeHash,
-    name: defs.Stat.get(stat.statTypeHash).displayProperties.name,
-    value: socket.plugged?.stats?.[stat.statTypeHash] || 0,
-  }));
+  if (!masterworkPlug) {
+    return null;
+  }
+  const plugStats = masterworkPlug.stats;
+
+  const exoticWeapon = createdItem.isExotic && createdItem.bucket?.sort === 'Weapons';
+
+  if (!plugStats || isEmpty(plugStats)) {
+    if (exoticWeapon) {
+      return {
+        tier: maxTier,
+        stats: undefined,
+      };
+    }
+    return null;
+  }
+
+  const stats: DimMasterwork['stats'] = [];
+
+  const primaryMWStatHash =
+    enhancedIntrinsics.has(masterworkPlug.plugDef.hash) ||
+    masterworksWithCondStats.includes(masterworkPlug.plugDef.hash)
+      ? masterworkPlug.plugDef.investmentStats[0]?.statTypeHash
+      : undefined;
+
+  for (const [statHash_, stat] of Object.entries(plugStats)) {
+    const statHash = parseInt(statHash_, 10);
+    if (!createdItem.stats?.some((s) => s.statHash === statHash)) {
+      continue;
+    }
+    stats.push({
+      hash: statHash,
+      name: defs.Stat.get(statHash).displayProperties.name,
+      value: stat.value,
+      isPrimary: primaryMWStatHash === undefined || primaryMWStatHash === statHash,
+    });
+  }
+
+  const isArmor3 =
+    masterworkPlug.plugDef.plug.plugCategoryHash === PlugCategoryHashes.V460PlugsArmorMasterworks;
+  const tier = exoticWeapon
+    ? maxTier
+    : isArmor3
+      ? // Pick any stat that's not the energy stat
+        masterworkPlug.plugDef.investmentStats.find((s) => s.isConditionallyActive)?.value || 0
+      : Math.abs(masterworkPlug.plugDef.investmentStats[0].value);
 
   return {
-    progress: plugObjective.progress,
-    typeName:
-      socket.plugged.plugDef.plug.plugCategoryHash ===
-      PlugCategoryHashes.V300PlugsMasterworksGenericWeaponsKills
-        ? 'Vanguard'
-        : 'Crucible',
-    typeIcon: objectiveDef.displayProperties.icon,
-    typeDesc: objectiveDef.progressDescription,
-    tier: socket.plugged?.plugDef.investmentStats[0].value,
+    tier,
     stats,
   };
+}
+
+/**
+ * Determine if a masterwork with this primary stat would be a valid
+ * masterwork for this item.
+ */
+export function isValidMasterworkStat(
+  defs: D2ManifestDefinitions,
+  itemDef: DestinyInventoryItemDefinition,
+  statHash: number,
+) {
+  // Bows have a charge time stat that nobody asked for
+  if (
+    statHash === StatHashes.ChargeTime &&
+    itemDef.itemCategoryHashes?.includes(ItemCategoryHashes.Bows)
+  ) {
+    return false;
+  }
+
+  // Only swords have an impact masterwork
+  if (
+    statHash === StatHashes.Impact &&
+    !itemDef.itemCategoryHashes?.includes(ItemCategoryHashes.Sword)
+  ) {
+    return false;
+  }
+
+  const statGroupHash = itemDef.stats!.statGroupHash!;
+  const statGroupDef = defs.StatGroup.get(statGroupHash);
+
+  return statGroupDef.scaledStats.some((s) => s.statHash === statHash);
 }

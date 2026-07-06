@@ -1,14 +1,11 @@
-import React, { ReactElement, ReactNode } from 'react';
 import BungieImage from 'app/dim-ui/BungieImage';
-import { RootState } from 'app/store/types';
-import { useDispatch, useSelector } from 'react-redux';
-import styles from './CustomStatTotal.m.scss';
-import { armorStats } from 'app/inventory/store/stats';
-import { DestinyStatDefinition, DestinyClass } from 'bungie-api-ts/destiny2';
-import { setSetting } from '../settings/actions';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { armorStats } from 'app/search/d2-known-values';
+import { useSetting } from 'app/settings/hooks';
+import { addDividers } from 'app/utils/react';
+import { DestinyClass, DestinyStatDefinition } from 'bungie-api-ts/destiny2';
 import clsx from 'clsx';
-import { settingsSelector } from 'app/settings/reducer';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
+import * as styles from './CustomStatTotal.m.scss';
 
 export type StatHashListsKeyedByDestinyClass = Record<number, number[]>;
 
@@ -21,38 +18,34 @@ export function StatTotalToggle({
   forClass?: DestinyClass;
   readOnly?: boolean;
 }) {
-  const defs = useSelector<RootState, D2ManifestDefinitions>((state) => state.manifest.d2Manifest!);
-  const customTotalStatsByClass = useSelector<RootState, StatHashListsKeyedByDestinyClass>(
-    (state) => settingsSelector(state).customTotalStatsByClass
-  );
-  const dispatch = useDispatch();
+  const defs = useD2Definitions();
+  const [customTotalStatsByClass, setCustomTotalStatsByClass] =
+    useSetting('customTotalStatsByClass');
 
   const toggleStat = (statHash: number) => {
-    dispatch(
-      setSetting('customTotalStatsByClass', {
-        ...customTotalStatsByClass,
-        ...{
-          [forClass]: toggleArrayElement(statHash, customTotalStatsByClass[forClass] ?? []),
-        },
-      })
-    );
+    setCustomTotalStatsByClass({
+      ...customTotalStatsByClass,
+      ...{
+        [forClass]: toggleArrayElement(statHash, customTotalStatsByClass[forClass] ?? []),
+      },
+    });
   };
 
   const activeStats = customTotalStatsByClass[forClass]?.length
     ? customTotalStatsByClass[forClass]
     : [];
 
+  if (!defs) {
+    return null;
+  }
   return (
     <div className={clsx(className)}>
       {addDividers(
         [
-          { className: 'activeStatLabels', includesCheck: true },
-          { className: 'inactiveStatLabels', includesCheck: false },
+          { className: styles.activeStatLabels, includesCheck: true },
+          { className: styles.inactiveStatLabels, includesCheck: false },
         ].map(({ className, includesCheck }) => (
-          <span
-            key={className}
-            className={clsx(styles[className], { [styles.readOnly]: readOnly })}
-          >
+          <span key={className} className={clsx(className, { [styles.readOnly]: readOnly })}>
             {addDividers(
               armorStats
                 .filter((statHash) => activeStats.includes(statHash) === includesCheck)
@@ -64,11 +57,11 @@ export function StatTotalToggle({
                     readOnly={readOnly}
                   />
                 )),
-              <span className={styles.divider} />
+              <span className={styles.divider} />,
             )}
           </span>
         )),
-        <span className={styles.divider} />
+        <span className={styles.divider} />,
       )}
     </div>
   );
@@ -97,6 +90,7 @@ function StatToggleButton({
             }
           : undefined
       }
+      role="button"
     >
       {stat.displayProperties.hasIcon ? (
         <span title={stat.displayProperties.name} className={styles.inlineStatIcon}>
@@ -112,11 +106,4 @@ function StatToggleButton({
 /** adds missing, or removes existing, element in arr */
 function toggleArrayElement<T>(element: T, arr: T[]) {
   return arr.includes(element) ? arr.filter((v) => v !== element) : arr.concat(element);
-}
-
-/** places a divider between each element of arr */
-function addDividers<T extends React.ReactNode>(arr: T[], divider: ReactElement): ReactNode[] {
-  return arr
-    .flatMap((e, index) => [e, React.cloneElement(divider, { key: `divider-${index}` })])
-    .slice(0, -1);
 }

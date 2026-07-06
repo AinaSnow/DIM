@@ -1,10 +1,9 @@
-import React from 'react';
-import _ from 'lodash';
-import DropDown, { DropDownItem } from './DropDown';
 import { t } from 'app/i18next-t';
 import { DestinyClass } from 'bungie-api-ts/destiny2';
-import { ColumnDefinition } from './table-types';
+import { memo } from 'react';
 import { getColumnSelectionId } from './Columns';
+import DropDown, { DropDownItem } from './DropDown';
+import { ColumnDefinition } from './table-types';
 
 /**
  * Component for selection of which columns are displayed in the organizer table.
@@ -16,7 +15,7 @@ import { getColumnSelectionId } from './Columns';
  * TODO: Convert to including drag and drop functionality so that columns can be reordered.
  */
 // TODO: Save to settings
-export default React.memo(function EnabledColumnsSelector({
+export default memo(function EnabledColumnsSelector({
   columns,
   enabledColumns,
   forClass,
@@ -25,14 +24,21 @@ export default React.memo(function EnabledColumnsSelector({
   columns: ColumnDefinition[];
   enabledColumns: string[];
   forClass: DestinyClass;
-  onChangeEnabledColumn(item: { checked: boolean; id: string }): void;
+  onChangeEnabledColumn: (item: { checked: boolean; id: string }) => void;
 }) {
   const items: { [id: string]: DropDownItem } = {};
 
   for (const column of columns) {
     const id = getColumnSelectionId(column);
     const header = column.columnGroup ? column.columnGroup.header : column.header;
-    if (id === 'selection' || column.noHide) {
+    const dropdownLabel = column.columnGroup
+      ? column.columnGroup.dropdownLabel
+      : column.dropdownLabel;
+    if (
+      id === 'selection' ||
+      column.noHide ||
+      (column.limitToClass !== undefined && column.limitToClass !== forClass)
+    ) {
       continue;
     }
 
@@ -42,6 +48,7 @@ export default React.memo(function EnabledColumnsSelector({
       items[id] = {
         id,
         content: header,
+        dropdownLabel: dropdownLabel,
         checked,
         onItemSelect: () => onChangeEnabledColumn({ id, checked: !checked }),
       };

@@ -15,23 +15,6 @@
   // 	],
   // 	"description": "Log output to console"
   // }
-  "React Component": {
-    "prefix": "comp",
-    "body": [
-      "import React from 'react';",
-      "",
-      "export default class ${1:ClassName} extends React.Component {",
-      "\trender() {",
-      "\t\treturn (",
-      "\t\t\t$0",
-      "\t\t);",
-      "\t}",
-      "}",
-      ""
-    ],
-    "description": "TypeScript React Component"
-  },
-
   "SFC Component": {
     "prefix": "sfc",
     "body": [
@@ -42,49 +25,30 @@
       "\t\t$0",
       "\t);",
       "}",
-      ""
+      "",
     ],
-    "description": "TypeScript Stateless Functional Component"
+    "description": "TypeScript Stateless Functional Component",
+    "scope": "javascriptreact,typescriptreact",
   },
 
   "import i18next": {
     "prefix": "imt",
     "body": ["import { t } from 'app/i18next-t';"],
-    "description": "Import t helper from i18next"
-  },
-
-  "import React": {
-    "prefix": "imr",
-    "body": ["import React from 'react';"],
-    "description": "Import React"
+    "description": "Import t helper from i18next",
+    "scope": "javascriptreact,typescriptreact",
   },
 
   "import clsx": {
     "prefix": "imc",
     "body": ["import clsx from 'clsx';"],
-    "description": "Import clsx"
+    "description": "Import clsx",
+    "scope": "javascriptreact,typescriptreact",
   },
 
-  "mapStateToProps": {
-    "prefix": "mapStateToProps",
-    "body": [
-      "function mapStateToProps(state: RootState): StoreProps {",
-      "  return {",
-      "    $0",
-      "  };",
-      "}"
-    ],
-    "description": "mapStateToProps"
+  "import styles": {
+    "prefix": "ims",
+    "body": ["import * as styles from './$TM_FILENAME_BASE.m.scss';"],
+    "description": "Import CSS module",
+    "scope": "javascriptreact,typescriptreact",
   },
-
-  "mapDispatchToProps": {
-    "prefix": "mapDispatchToProps",
-    "body": [
-      "const mapDispatchToProps = {",
-      "  $0",
-      "};",
-      "type DispatchProps = typeof mapDispatchToProps"
-    ],
-    "description": "mapDispatchToProps"
-  }
 }

@@ -1,45 +1,49 @@
-import {
-  DestinyCharacterComponent,
-  SingleComponentResponse,
-  DictionaryComponentResponse,
-  DestinyCollectiblesComponent,
-  DestinyProfileCollectiblesComponent,
-  DestinyProfileResponse,
-  DestinyCollectibleComponent,
-  DestinyItemComponent,
-} from 'bungie-api-ts/destiny2';
-import _ from 'lodash';
-import { DestinyAccount } from '../accounts/destiny-account';
+import { startSpan } from '@sentry/browser';
+import { handleAuthErrors } from 'app/accounts/actions';
+import { compareAccounts, DestinyAccount } from 'app/accounts/destiny-account';
+import { getPlatforms } from 'app/accounts/platforms';
+import { currentAccountSelector } from 'app/accounts/selectors';
+import { loadClarity } from 'app/clarity/descriptions/loadDescriptions';
+import { customStatsSelector } from 'app/dim-api/selectors';
+import { t } from 'app/i18next-t';
+import { inGameLoadoutLoaded } from 'app/loadout/ingame/actions';
+import { processInGameLoadouts } from 'app/loadout/loadout-type-converters';
+import { loadCoreSettings } from 'app/manifest/actions';
+import { checkForNewManifest, reloadToUpdateManifest } from 'app/manifest/manifest-service-json';
+import { d2ManifestSelector, manifestSelector } from 'app/manifest/selectors';
+import { loadingTracker } from 'app/shell/loading-tracker';
+import { get, set } from 'app/storage/idb-keyval';
+import { ThunkResult } from 'app/store/types';
+import { isMobileBrowser } from 'app/utils/browsers';
+import { DimError } from 'app/utils/dim-error';
+import { convertToError, errorMessage } from 'app/utils/errors';
+import { errorLog, infoLog, timer, warnLog } from 'app/utils/log';
+import { DestinyProfileResponse } from 'bungie-api-ts/destiny2';
+import { getCharacters as d1GetCharacters } from '../bungie-api/destiny1-api';
 import { getCharacters, getStores } from '../bungie-api/destiny2-api';
 import { bungieErrorToaster } from '../bungie-api/error-toaster';
-import { getDefinitions, D2ManifestDefinitions } from '../destiny2/d2-definitions';
+import { D2ManifestDefinitions, getDefinitions } from '../destiny2/d2-definitions';
 import { bungieNetPath } from '../dim-ui/BungieImage';
-import { reportException } from '../utils/exceptions';
-import { getLight } from '../loadout/loadout-utils';
-import { resetIdTracker, processItems } from './store/d2-item-factory';
-import { makeVault, makeCharacter, getCharacterStatsData } from './store/d2-store-factory';
-import { cleanInfos } from './dim-item-info';
-import { t } from 'app/i18next-t';
-import { D2Vault, D2Store, D2StoreServiceType } from './store-types';
-import { InventoryBuckets } from './inventory-buckets';
-import { fetchRatings } from '../item-review/destiny-tracker.service';
-import store from '../store/store';
-import { update, loadNewItems, error, charactersUpdated, CharacterInfo } from './actions';
-import { loadingTracker } from '../shell/loading-tracker';
 import { showNotification } from '../notifications/notifications';
-import { BehaviorSubject, Subject, ConnectableObservable } from 'rxjs';
-import { switchMap, publishReplay, merge, take } from 'rxjs/operators';
-import helmetIcon from '../../../destiny-icons/armor_types/helmet.svg';
-import xpIcon from '../../images/xpIcon.svg';
-import { maxLightItemSet } from 'app/loadout/auto-loadouts';
-import { storesSelector, bucketsSelector } from './selectors';
-import { ThunkResult } from 'app/store/types';
-import { currentAccountSelector } from 'app/accounts/selectors';
+import { reportException } from '../utils/sentry';
+import {
+  CharacterInfo,
+  charactersUpdated,
+  error,
+  profileError,
+  profileLoaded,
+  update,
+} from './actions';
+import { notifyOtherTabsStoreUpdated } from './cross-tab';
+import { cleanInfos } from './dim-item-info';
+import { d2BucketsSelector, storesLoadedSelector } from './selectors';
+import { DimStore } from './store-types';
 import { getCharacterStatsData as getD1CharacterStatsData } from './store/character-utils';
-import { getCharacters as d1GetCharacters } from '../bungie-api/destiny1-api';
-import { getArtifactBonus } from './stores-helpers';
-import { ItemPowerSet } from './ItemPowerSet';
-import { StatHashes } from 'data/d2/generated-enums';
+import { buildStores, getCharacterStatsData } from './store/d2-store-factory';
+import { resetItemIndexGenerator } from './store/item-index';
+import { getCurrentStore } from './stores-helpers';
+
+const TAG = 'd2-stores';
 
 /**
  * Update the high level character information for all the stores
@@ -57,16 +61,12 @@ export function updateCharacters(): ThunkResult {
       return;
     }
 
-    const defs =
-      account.destinyVersion === 2
-        ? getState().manifest.d2Manifest
-        : getState().manifest.d1Manifest;
-
+    const defs = manifestSelector(getState());
     if (!defs) {
       return;
     }
 
-    let characters: CharacterInfo[] = [];
+    let characters: CharacterInfo[];
     if (account.destinyVersion === 2) {
       const profileInfo = await getCharacters(account);
       characters = profileInfo.characters.data
@@ -76,408 +76,453 @@ export function updateCharacters(): ThunkResult {
             powerLevel: character.light,
             background: bungieNetPath(character.emblemBackgroundPath),
             icon: bungieNetPath(character.emblemPath),
-            stats: getCharacterStatsData(getState().manifest.d2Manifest!, character.stats),
+            stats: getCharacterStatsData(d2ManifestSelector(getState())!, character.stats),
             color: character.emblemColor,
           }))
         : [];
     } else {
       const profileInfo = await d1GetCharacters(account);
-      characters = profileInfo.map((character) => ({
-        characterId: character.id,
-        level: character.base.characterLevel,
-        powerLevel: character.base.characterBase.powerLevel,
-        percentToNextLevel: character.base.percentToNextLevel / 100,
-        background: bungieNetPath(character.base.backgroundPath),
-        icon: bungieNetPath(character.base.emblemPath),
-        stats: getD1CharacterStatsData(
-          getState().manifest.d1Manifest!,
-          character.base.characterBase
-        ),
-      }));
+      characters = profileInfo.characters.map((character) => {
+        const characterBase = character.characterBase;
+        return {
+          characterId: characterBase.characterId,
+          level: character.characterLevel,
+          powerLevel: characterBase.powerLevel,
+          percentToNextLevel: character.percentToNextLevel / 100,
+          background: bungieNetPath(character.backgroundPath),
+          icon: bungieNetPath(character.emblemPath),
+          stats: getD1CharacterStatsData(getState().manifest.d1Manifest!, characterBase),
+        };
+      });
+    }
+
+    // If we switched account since starting this, give up
+    if (account !== currentAccountSelector(getState())) {
+      return;
     }
 
     dispatch(charactersUpdated(characters));
   };
 }
 
-export function mergeCollectibles(
-  profileCollectibles: SingleComponentResponse<DestinyProfileCollectiblesComponent>,
-  characterCollectibles: DictionaryComponentResponse<DestinyCollectiblesComponent>
-) {
-  const allCollectibles = {
-    ...profileCollectibles.data?.collectibles,
-  };
+let firstTime = true;
 
-  _.forIn(characterCollectibles.data || {}, ({ collectibles }) => {
-    Object.assign(allCollectibles, collectibles);
-  });
-
-  return allCollectibles;
-}
-
-export const D2StoresService = makeD2StoresService();
+let loading = false;
 
 /**
- * TODO: For now this is a copy of StoreService customized for D2. Over time we should either
- * consolidate them, or at least organize them better.
+ * Returns a promise for a fresh view of the stores and their items.
  */
-function makeD2StoresService(): D2StoreServiceType {
-  // A subject that keeps track of the current account. Because it's a
-  // behavior subject, any new subscriber will always see its last
-  // value.
-  const accountStream = new BehaviorSubject<DestinyAccount | null>(null);
-
-  // The triggering observable for force-reloading stores.
-  const forceReloadTrigger = new Subject();
-
-  // A stream of stores that switches on account changes and supports reloading.
-  // This is a ConnectableObservable that must be connected to start.
-  const storesStream = accountStream.pipe(
-    // But also re-emit the current value of the account stream
-    // whenever the force reload triggers
-    merge(forceReloadTrigger.pipe(switchMap(() => accountStream.pipe(take(1))))),
-    // Whenever either trigger happens, load stores
-    switchMap(loadingTracker.trackPromise(loadStores)),
-    // Keep track of the last value for new subscribers
-    publishReplay(1)
-  ) as ConnectableObservable<D2Store[] | undefined>;
-
-  // TODO: If we can make the store structures immutable, we could use
-  //       distinctUntilChanged to avoid emitting store updates when
-  //       nothing changed!
-
-  const service = {
-    getStores: () => storesSelector(store.getState()) as D2Store[],
-    getStoresStream,
-    reloadStores,
-  };
-
-  return service;
-
-  /**
-   * Set the current account, and get a stream of stores updates.
-   * This will keep returning stores even if something else changes
-   * the account by also calling "storesStream". This won't force the
-   * stores to reload unless they haven't been loaded at all.
-   *
-   * @return a stream of store updates
-   */
-  function getStoresStream(account: DestinyAccount) {
-    accountStream.next(account);
-    // Start the stream the first time it's asked for. Repeated calls
-    // won't do anything.
-    storesStream.connect();
-    return storesStream;
-  }
-
-  /**
-   * Force the inventory and characters to reload.
-   * @return the new stores
-   */
-  function reloadStores() {
-    // adhere to the old contract by returning the next value as a
-    // promise We take 2 from the stream because the publishReplay
-    // will always return the latest value instantly, and we want the
-    // next value (the refreshed value). toPromise returns the last
-    // value in the sequence.
-    const promise = storesStream.pipe(take(2)).toPromise();
-    forceReloadTrigger.next(); // signal the force reload
-    return promise;
-  }
-
-  /**
-   * Returns a promise for a fresh view of the stores and their items.
-   */
-  async function loadStores(account: DestinyAccount): Promise<D2Store[] | undefined> {
-    resetIdTracker();
-
+export function loadStores({
+  fromOtherTab = false,
+}: {
+  fromOtherTab?: boolean;
+} = {}): ThunkResult<DimStore[] | undefined> {
+  return async (dispatch, getState) => {
     try {
-      const [defs, , profileInfo] = await Promise.all([
-        (store.dispatch(getDefinitions()) as any) as Promise<D2ManifestDefinitions>,
-        store.dispatch(loadNewItems(account)),
-        getStores(account),
-      ]);
-      const buckets = bucketsSelector(store.getState())!;
-      console.time('Process inventory');
-
-      // TODO: components may be hidden (privacy)
-
-      if (
-        !profileInfo.profileInventory.data ||
-        !profileInfo.characterInventories.data ||
-        !profileInfo.characters.data
-      ) {
-        console.error(
-          'Vault or character inventory was missing - bailing in order to avoid corruption'
-        );
-        throw new Error(t('BungieService.Difficulties'));
+      let stores: DimStore[] | undefined;
+      if (loading) {
+        infoLog(TAG, 'Already loading stores, skipping this load');
+        return;
       }
+      await navigator.locks.request(
+        'loadStores',
+        {
+          // If another tab is working on it, don't wait. The callback will get a null lock.
+          ifAvailable: true,
+          mode: 'exclusive',
+        },
+        async (lock) => {
+          if (!lock && !firstTime) {
+            infoLog('cross-tab', 'Another tab is already loading stores');
+            // This means another tab was already requesting the stores.
+            throw new Error('lock-held');
+          }
+          loading = true;
+          try {
+            let account = currentAccountSelector(getState());
+            if (!account) {
+              // TODO: throw here?
+              await dispatch(getPlatforms);
+              account = currentAccountSelector(getState());
+              if (account?.destinyVersion !== 2) {
+                return;
+              }
+            }
 
-      const lastPlayedDate = findLastPlayedDate(profileInfo);
-
-      const mergedCollectibles = mergeCollectibles(
-        profileInfo.profileCollectibles,
-        profileInfo.characterCollectibles
+            dispatch(loadCoreSettings()); // no need to wait
+            $featureFlags.clarityDescriptions && dispatch(loadClarity()); // no need to await
+            // The first time we load, allow the data to be loaded from IDB. We then do a second
+            // load to make sure that we immediately try to get remote data.
+            if (firstTime) {
+              infoLog(TAG, 'First time loading stores, only loading from IDB (if available)');
+              await dispatch(loadStoresData(account, { firstTime, fromOtherTab }));
+              firstTime = false;
+              if (getState().inventory.live) {
+                infoLog(TAG, 'Initial load got live data, skipping fast-follow load');
+                return;
+              } else {
+                infoLog(TAG, 'Fast-follow load live stores from Bungie.net');
+              }
+            }
+            // The account can be mutated by the first load (lastPlayedDate)
+            account = currentAccountSelector(getState());
+            if (!account) {
+              errorLog(TAG, 'No account after loading stores');
+              return;
+            }
+            stores = await dispatch(loadStoresData(account, { firstTime: false, fromOtherTab }));
+          } finally {
+            loading = false;
+          }
+        },
       );
-
-      const vault = processVault(defs, buckets, profileInfo, mergedCollectibles);
-
-      const characters = Object.keys(profileInfo.characters.data).map((characterId) =>
-        processCharacter(
-          defs,
-          buckets,
-          characterId,
-          profileInfo,
-          mergedCollectibles,
-          lastPlayedDate
-        )
-      );
-
-      const stores = [...characters, vault];
-
-      updateVaultCounts(buckets, characters.find((c) => c.current)!, vault);
-
-      if ($featureFlags.reviewsEnabled) {
-        store.dispatch(fetchRatings(stores));
+      // Need to do this after the lock has been released
+      if (!firstTime && stores !== undefined && !fromOtherTab) {
+        notifyOtherTabsStoreUpdated();
       }
-
-      store.dispatch(cleanInfos(stores));
-
-      for (const s of stores) {
-        updateBasePower(stores, s, defs);
-      }
-
-      // Let our styling know how many characters there are
-      // TODO: this should be an effect on the stores component, except it's also
-      // used on D1 activities page
-      document
-        .querySelector('html')!
-        .style.setProperty('--num-characters', String(stores.length - 1));
-      console.timeEnd('Process inventory');
-
-      console.time('Inventory state update');
-      store.dispatch(update({ stores, profileResponse: profileInfo }));
-      console.timeEnd('Inventory state update');
-
       return stores;
     } catch (e) {
-      console.error('Error loading stores', e);
-      reportException('d2stores', e);
-      if (storesSelector(store.getState()).length > 0) {
-        // don't replace their inventory with the error, just notify
-        showNotification(bungieErrorToaster(e));
-      } else {
-        store.dispatch(error(e));
+      if (!(e instanceof Error) || e.message !== 'lock-held') {
+        throw e;
       }
-      // It's important that we swallow all errors here - otherwise
-      // our observable will fail on the first error. We could work
-      // around that with some rxjs operators, but it's easier to
-      // just make this never fail.
-      return undefined;
     }
-  }
+  };
+}
 
-  /**
-   * Process a single character from its raw form to a DIM store, with all the items.
-   */
-  function processCharacter(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    characterId: string,
-    profileInfo: DestinyProfileResponse,
-    mergedCollectibles: {
-      [hash: number]: DestinyCollectibleComponent;
-    },
-    lastPlayedDate: Date
-  ): D2Store {
-    const character = profileInfo.characters.data![characterId];
-    const characterInventory = profileInfo.characterInventories.data?.[characterId]?.items || [];
-    const profileInventory = profileInfo.profileInventory.data?.items || [];
-    const characterEquipment = profileInfo.characterEquipment.data?.[characterId]?.items || [];
-    const itemComponents = profileInfo.itemComponents;
-    const progressions = profileInfo.characterProgressions.data?.[characterId]?.progressions || [];
-    const uninstancedItemObjectives =
-      profileInfo.characterProgressions.data?.[characterId].uninstancedItemObjectives || [];
+/** How old the profile can be and still trigger cleanup of tags. */
+const FRESH_ENOUGH_TO_CLEAN_INFOS = 90_000; // 90 seconds
 
-    const store = makeCharacter(defs, character, lastPlayedDate);
-
-    // This is pretty much just needed for the xp bar under the character header
-    store.progression = progressions ? { progressions: Object.values(progressions) } : null;
-
-    // We work around the weird account-wide buckets by assigning them to the current character
-    const items = characterInventory.slice();
-    for (const k in characterEquipment) {
-      items.push(characterEquipment[k]);
+function loadProfile(
+  account: DestinyAccount,
+  {
+    firstTime,
+    fromOtherTab,
+  }: {
+    firstTime: boolean;
+    fromOtherTab: boolean;
+  },
+): ThunkResult<
+  | {
+      profile: DestinyProfileResponse;
+      /** Whether the data is from a "live", remote Bungie.net response. false if this is cached data. */
+      live: boolean;
+      readOnly?: boolean;
+    }
+  | undefined
+> {
+  return async (dispatch, getState) => {
+    const mockProfileData = getState().inventory.mockProfileData;
+    if (mockProfileData) {
+      return { profile: mockProfileData, live: false, readOnly: true };
     }
 
-    if (store.current) {
-      for (const i of profileInventory) {
-        const bucket = buckets.byHash[i.bucketHash];
-        // items that can be stored in a vault
-        if (bucket && (bucket.vaultBucket || bucket.type === 'SpecialOrders')) {
-          items.push(i);
+    const cachedProfileKey = `profile-${account.membershipId}`;
+
+    // First try loading from IndexedDB
+    let cachedProfileResponse = getState().inventory.profileResponse;
+    // TODO: always check IDB, in case another tab loaded it?
+    if (!cachedProfileResponse || fromOtherTab) {
+      try {
+        cachedProfileResponse = await get<DestinyProfileResponse>(cachedProfileKey);
+        // Check to make sure the profile hadn't been loaded in the meantime
+        if (!fromOtherTab && getState().inventory.profileResponse) {
+          cachedProfileResponse = getState().inventory.profileResponse;
+        } else if (cachedProfileResponse) {
+          const profileAgeSecs =
+            (Date.now() - new Date(cachedProfileResponse.responseMintedTimestamp ?? 0).getTime()) /
+            1000;
+          if (fromOtherTab) {
+            infoLog(
+              TAG,
+              `Loaded cached profile from IndexedDB because another tab updated it. It is ${profileAgeSecs}s old.`,
+            );
+          } else {
+            infoLog(
+              TAG,
+              `Loaded cached profile from IndexedDB, using it until new data is available. It is ${profileAgeSecs}s old.`,
+            );
+          }
+          dispatch(profileLoaded({ profile: cachedProfileResponse, live: fromOtherTab }));
+          // The first time we load, just use the IDB version if we can, to speed up loading
+          if (firstTime) {
+            return { profile: cachedProfileResponse, live: false };
+          }
         }
+      } catch (e) {
+        errorLog(TAG, 'Failed to load profile response from IDB', e);
       }
     }
 
-    const processedItems = processItems(
-      defs,
-      buckets,
-      store,
-      items,
-      itemComponents,
-      mergedCollectibles,
-      uninstancedItemObjectives
-    );
-    store.items = processedItems;
-    // by type-bucket
-    store.buckets = _.groupBy(store.items, (i) => i.location.hash);
-    // Fill in any missing buckets
-    Object.values(buckets.byType).forEach((bucket) => {
-      if (!store.buckets[bucket.hash]) {
-        store.buckets[bucket.hash] = [];
-      }
-    });
-    return store;
-  }
+    const cachedProfileMintedDate = cachedProfileResponse
+      ? new Date(cachedProfileResponse.responseMintedTimestamp ?? 0)
+      : new Date(0);
 
-  function processVault(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    profileInfo: DestinyProfileResponse,
-    mergedCollectibles: {
-      [hash: number]: DestinyCollectibleComponent;
+    try {
+      const remoteProfileResponse = await getStores(account);
+      const now = Date.now();
+      const remoteProfileMintedDate = new Date(remoteProfileResponse.responseMintedTimestamp ?? 0);
+      const remoteProfileAgeSec = (now - remoteProfileMintedDate.getTime()) / 1000;
+
+      // compare new response against cached response, toss if it's not newer!
+      if (cachedProfileResponse) {
+        const cachedProfileAgeSec = (now - cachedProfileMintedDate.getTime()) / 1000;
+        if (remoteProfileMintedDate.getTime() <= cachedProfileMintedDate.getTime()) {
+          const eq = remoteProfileMintedDate.getTime() === cachedProfileMintedDate.getTime();
+          const storesLoaded = storesLoadedSelector(getState());
+          const action = storesLoaded ? 'Skipping update.' : 'Using the cached profile.';
+          if (eq) {
+            infoLog(
+              TAG,
+              `Profile from Bungie.net is is ${remoteProfileAgeSec}s old, which is the same age as the cached profile.`,
+              action,
+            );
+          } else {
+            warnLog(
+              TAG,
+              `Profile from Bungie.net is ${remoteProfileAgeSec}s old, while the cached profile is ${cachedProfileAgeSec}s old.`,
+              action,
+            );
+          }
+          // Clear the error since we did load correctly
+          dispatch(profileError(undefined));
+          // undefined means skip processing, in case we already have computed stores
+          return storesLoaded ? undefined : { profile: cachedProfileResponse, live: false };
+        } else {
+          infoLog(
+            TAG,
+            `Profile from Bungie.net is ${remoteProfileAgeSec}s old, while the cached profile is ${cachedProfileAgeSec}s old.`,
+            `Using the new profile from Bungie.net.`,
+          );
+        }
+      } else {
+        infoLog(
+          TAG,
+          `No cached profile, using profile from Bungie.net which is ${remoteProfileAgeSec}s old.`,
+        );
+      }
+
+      await set(cachedProfileKey, remoteProfileResponse);
+      dispatch(profileLoaded({ profile: remoteProfileResponse, live: true }));
+      return { profile: remoteProfileResponse, live: true };
+    } catch (e) {
+      dispatch(handleAuthErrors(e));
+      dispatch(profileError(convertToError(e)));
+      if (cachedProfileResponse) {
+        errorLog(TAG, 'Error loading profile from Bungie.net, falling back to cached profile', e);
+        // undefined means skip processing, in case we already have computed stores
+        return storesLoadedSelector(getState())
+          ? undefined
+          : { profile: cachedProfileResponse, live: false };
+      }
+      // rethrow
+      throw e;
     }
-  ): D2Vault {
-    const profileInventory = profileInfo.profileInventory.data
-      ? profileInfo.profileInventory.data.items
-      : [];
-    const profileCurrencies = profileInfo.profileCurrencies.data
-      ? profileInfo.profileCurrencies.data.items
-      : [];
-    const itemComponents = profileInfo.itemComponents;
+  };
+}
 
-    const store = makeVault(defs, profileCurrencies);
+let lastCheckedManifest = 0;
 
-    const items: DestinyItemComponent[] = [];
-    for (const i of profileInventory) {
-      const bucket = buckets.byHash[i.bucketHash];
-      // items that cannot be stored in the vault, and are therefore *in* a vault
-      if (bucket && !bucket.vaultBucket && bucket.type !== 'SpecialOrders') {
-        items.push(i);
+function loadStoresData(
+  account: DestinyAccount,
+  profileArgs: {
+    firstTime: boolean;
+    fromOtherTab: boolean;
+  },
+): ThunkResult<DimStore[] | undefined> {
+  return async (dispatch, getState) => {
+    const promise = (async () => {
+      // If we switched account since starting this, give up
+      if (!compareAccounts(account, currentAccountSelector(getState()))) {
+        infoLog(
+          TAG,
+          'Switched accounts, giving up on loading stores',
+          1,
+          account,
+          currentAccountSelector(getState()),
+        );
+        return;
       }
-    }
 
-    const processedItems = processItems(
-      defs,
-      buckets,
-      store,
-      items,
-      itemComponents,
-      mergedCollectibles
-    );
-    store.items = processedItems;
-    // by type-bucket
-    store.buckets = _.groupBy(store.items, (i) => i.location.hash);
-    store.vaultCounts = {};
-    // Fill in any missing buckets
-    Object.values(buckets.byType).forEach((bucket) => {
-      if (!store.buckets[bucket.hash]) {
-        store.buckets[bucket.hash] = [];
-      }
-      if (bucket.vaultBucket) {
-        const vaultBucketId = bucket.vaultBucket.hash;
-        store.vaultCounts[vaultBucketId] = store.vaultCounts[vaultBucketId] || {
-          count: 0,
-          bucket: bucket.accountWide ? bucket : bucket.vaultBucket,
-        };
-        store.vaultCounts[vaultBucketId].count += store.buckets[bucket.hash].length;
-      }
-    });
-    return store;
-  }
+      return startSpan({ name: 'loadStoresD2' }, async () => {
+        resetItemIndexGenerator();
 
-  /**
-   * Find the date of the most recently played character.
-   */
-  function findLastPlayedDate(profileInfo: DestinyProfileResponse) {
-    return Object.values(profileInfo.characters.data!).reduce(
-      (memo: Date, character: DestinyCharacterComponent) => {
-        const d1 = new Date(character.dateLastPlayed);
-        return memo ? (d1 >= memo ? d1 : memo) : d1;
-      },
-      new Date(0)
-    );
-  }
+        try {
+          const [originalDefs, profileInfo] = await Promise.all([
+            dispatch(getDefinitions()),
+            dispatch(loadProfile(account, profileArgs)),
+          ]);
 
-  // Add a fake stat for "max base power"
-  function updateBasePower(stores: D2Store[], store: D2Store, defs: D2ManifestDefinitions) {
-    if (!store.isVault) {
-      const def = defs.Stat.get(StatHashes.Power);
-      const { equippable, unrestricted } = maxLightItemSet(stores, store);
-      const unrestrictedMaxGearPower = getLight(store, unrestricted);
-      const unrestrictedPowerFloor = Math.floor(unrestrictedMaxGearPower);
-      const equippableMaxGearPower = getLight(store, equippable);
+          let defs = originalDefs;
 
-      const hasClassified = stores.some((s) =>
-        s.items.some(
-          (i) =>
-            i.classified &&
-            (i.location.sort === 'Weapons' || i.location.sort === 'Armor' || i.type === 'Ghost')
-        )
-      );
+          // If we switched account since starting this, give up
+          if (!compareAccounts(account, currentAccountSelector(getState()))) {
+            infoLog(
+              TAG,
+              'Switched accounts, giving up on loading stores',
+              2,
+              account,
+              currentAccountSelector(getState()),
+            );
+            return;
+          }
 
-      const differentEquippableMaxGearPower =
-        (unrestrictedMaxGearPower !== equippableMaxGearPower && equippableMaxGearPower) ||
-        undefined;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            if (!defs || !profileInfo) {
+              infoLog(TAG, 'No defs or profile info, skipping store load', {
+                defs: Boolean(defs),
+                profileInfo: Boolean(profileInfo),
+              });
+              return;
+            }
 
-      store.stats.maxGearPower = {
-        hash: -3,
-        name: t('Stats.MaxGearPowerAll'),
-        // used to be t('Stats.MaxGearPower'), a translation i don't want to lose yet
-        hasClassified,
-        description: '',
-        differentEquippableMaxGearPower,
-        richTooltip: ItemPowerSet(unrestricted, unrestrictedPowerFloor),
-        value: unrestrictedMaxGearPower,
-        icon: helmetIcon,
-      };
+            const { profile: profileResponse, live, readOnly } = profileInfo;
 
-      const artifactPower = getArtifactBonus(store);
-      store.stats.powerModifier = {
-        hash: -2,
-        name: t('Stats.PowerModifier'),
-        hasClassified: false,
-        description: '',
-        value: artifactPower,
-        icon: xpIcon,
-      };
+            const stopTimer = timer(TAG, 'Process inventory');
 
-      store.stats.maxTotalPower = {
-        hash: -1,
-        name: t('Stats.MaxTotalPower'),
-        hasClassified,
-        description: '',
-        value: unrestrictedMaxGearPower + artifactPower,
-        icon: bungieNetPath(def.displayProperties.icon),
-      };
-    }
-  }
+            const buckets = d2BucketsSelector(getState())!;
+            const customStats = customStatsSelector(getState());
+            const stores = buildStores(
+              {
+                defs,
+                buckets,
+                customStats,
+                profileResponse,
+              },
+              // Only report missing-def items on the second attempt: the loop only
+              // reaches attempt 1 after we've already refreshed the manifest below, so a
+              // def that's still missing here isn't just a stale manifest.
+              attempt === 1,
+            );
 
-  // TODO: vault counts are silly and convoluted. We really need an
-  // object to represent a Profile.
-  function updateVaultCounts(buckets: InventoryBuckets, activeStore: D2Store, vault: D2Vault) {
-    // Fill in any missing buckets
-    Object.values(buckets.byType).forEach((bucket) => {
-      if (bucket.accountWide && bucket.vaultBucket) {
-        const vaultBucketId = bucket.hash;
-        vault.vaultCounts[vaultBucketId] = vault.vaultCounts[vaultBucketId] || {
-          count: 0,
-          bucket,
-        };
-        vault.vaultCounts[vaultBucketId].count += activeStore.buckets[bucket.hash].length;
-      }
-    });
-    activeStore.vault = vault; // god help me
-  }
+            // One reason stores could have errors is if the manifest was not up
+            // to date. Check to see if it has updated, and if so, download it and
+            // immediately try again.
+            if (
+              stores.some((s) => s.hadErrors) &&
+              Date.now() - lastCheckedManifest > 5 * 60 * 1000
+            ) {
+              lastCheckedManifest = Date.now();
+
+              if (await checkForNewManifest()) {
+                // On mobile, downloading the new manifest while the old one is
+                // still in memory can get the page killed for using too much
+                // memory - reload the app instead, so the new manifest is
+                // downloaded on a fresh boot.
+                if (isMobileBrowser() && (await reloadToUpdateManifest())) {
+                  return;
+                }
+                defs = await dispatch(getDefinitions(true));
+                continue; // go back to the top of the loop with the new defs
+              }
+            }
+
+            if (readOnly) {
+              for (const store of stores) {
+                store.hadErrors = true;
+                for (const item of store.items) {
+                  item.lockable = false;
+                  item.trackable = false;
+                  item.notransfer = true;
+                  item.taggable = false;
+                }
+              }
+            }
+
+            const currencies = processCurrencies(profileResponse, defs);
+
+            const loadouts = processInGameLoadouts(profileResponse, defs);
+
+            stopTimer();
+
+            return startSpan({ name: 'updateInventoryState' }, () => {
+              const stopStateTimer = timer(TAG, 'Inventory state update');
+
+              // If we switched account since starting this, give up before saving
+              if (!compareAccounts(account, currentAccountSelector(getState()))) {
+                infoLog(
+                  TAG,
+                  'Switched accounts, giving up on loading stores',
+                  3,
+                  account,
+                  currentAccountSelector(getState()),
+                );
+                return;
+              }
+
+              if (!getCurrentStore(stores)) {
+                errorLog(TAG, 'No characters in profile');
+                dispatch(
+                  error(
+                    new DimError(
+                      'Accounts.NoCharactersTitle',
+                      t('Accounts.NoCharacters'),
+                    ).withNoSocials(),
+                  ),
+                );
+                return;
+              }
+
+              // Cached loads can come from IDB, which can be VERY outdated, so don't
+              // remove item tags/notes based on that. We also refuse to clean tags if
+              // the profile is too old in wall-clock time. Technically we could do
+              // this *only* based on the minted timestamp, but there's no real point
+              // in cleaning items for cached loads since they presumably were cleaned
+              // already.
+              const profileMintedDate = new Date(profileResponse.responseMintedTimestamp ?? 0);
+              if (live && Date.now() - profileMintedDate.getTime() < FRESH_ENOUGH_TO_CLEAN_INFOS) {
+                dispatch(cleanInfos(stores));
+              }
+              dispatch(
+                update({
+                  stores,
+                  currencies,
+                  responseMintedTimestamp: profileResponse.responseMintedTimestamp,
+                }),
+              );
+              dispatch(inGameLoadoutLoaded(loadouts));
+
+              stopStateTimer();
+
+              return stores;
+            });
+          }
+        } catch (e) {
+          errorLog(TAG, 'Error loading stores', e);
+          reportException('d2stores', e);
+
+          // If we switched account since starting this, give up
+          if (!compareAccounts(account, currentAccountSelector(getState()))) {
+            return;
+          }
+
+          dispatch(handleAuthErrors(e));
+
+          if (storesLoadedSelector(getState())) {
+            // don't replace their inventory with the error, just notify
+            showNotification(bungieErrorToaster(errorMessage(e)));
+          } else {
+            dispatch(error(convertToError(e)));
+          }
+          return undefined;
+        }
+      });
+    })();
+    loadingTracker.addPromise(promise);
+    return promise;
+  };
+}
+
+function processCurrencies(profileInfo: DestinyProfileResponse, defs: D2ManifestDefinitions) {
+  const profileCurrencies = profileInfo.profileCurrencies.data
+    ? profileInfo.profileCurrencies.data.items
+    : [];
+  const currencies = profileCurrencies.map((c) => ({
+    itemHash: c.itemHash,
+    quantity: c.quantity,
+    displayProperties: defs.InventoryItem.get(c.itemHash)?.displayProperties ?? {
+      name: 'Unknown',
+      description: 'Unknown item',
+    },
+  }));
+  return currencies;
 }

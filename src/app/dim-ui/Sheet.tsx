@@ -1,246 +1,345 @@
-import React, { useRef, useEffect, useMemo, useCallback } from 'react';
-import './Sheet.scss';
-import { AppIcon, disabledIcon } from '../shell/icons';
-import { config, animated, useSpring } from 'react-spring';
-import { useDrag } from 'react-use-gesture';
+import { useHotkey } from 'app/hotkeys/useHotkey';
+import { t } from 'app/i18next-t';
+import ItemPickerContainer from 'app/item-picker/ItemPickerContainer';
+import { Portal } from 'app/utils/temp-container';
+import SingleVendorSheetContainer from 'app/vendors/single-vendor/SingleVendorSheetContainer';
 import clsx from 'clsx';
-import { disableBodyScroll, enableBodyScroll } from 'body-scroll-lock';
-import _ from 'lodash';
-
-interface Props {
-  header?: React.ReactNode | ((args: { onClose(): void }) => React.ReactNode);
-  footer?: React.ReactNode | ((args: { onClose(): void }) => React.ReactNode);
-  children?: React.ReactNode | ((args: { onClose(): void }) => React.ReactNode);
-  sheetClassName?: string;
-  onClose(): void;
-}
-
-const spring = {
-  ...config.stiff,
-  clamp: true,
-};
-
-// The sheet is dismissed if it's flicked at a velocity above dismissVelocity or dragged down more than dismissAmount times the height of the sheet.
-const dismissVelocity = 0.8;
-const dismissAmount = 0.5;
-
-// Disable body scroll on mobile
-const mobile = /iPad|iPhone|iPod|Android/.test(navigator.userAgent);
-
-const stopPropagation = (e) => e.stopPropagation();
+import {
+  PanInfo,
+  Transition,
+  motion,
+  useAnimation,
+  useDragControls,
+  useReducedMotion,
+} from 'motion/react';
+import React, {
+  createContext,
+  use,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { AppIcon, disabledIcon } from '../shell/icons';
+import ErrorBoundary from './ErrorBoundary';
+import { PressTipRoot } from './PressTip';
+import * as styles from './Sheet.m.scss';
+import { sheetsOpen } from './sheets-open';
+import { useFixOverscrollBehavior } from './useFixOverscrollBehavior';
 
 /**
- * A Sheet is a UI element that comes up from the bottom of the scren, and can be dragged to dismiss.
+ * Propagates a function for setting a sheet to disabled. This forms a chain as
+ * sheets are shown, where each sheet is wired to its parent so that each child
+ * disables and re-enables its parent automatically.
+ */
+const SheetDisabledContext = createContext<(shown: boolean) => void>(() => {
+  // No-op
+});
+
+/**
+ * The contents of the header, footer, and body can be regular elements, or a function that
+ * takes an "onClose" function that can be used to close the sheet. Using onClose to close
+ * the sheet ensures that it will animate away rather than simply disappearing.
+ */
+export type SheetContent = React.ReactNode | ((args: { onClose: () => void }) => React.ReactNode);
+
+// The sheet is dismissed if it's flicked at a velocity above dismissVelocity,
+// or dragged down more than dismissAmount times the height of the sheet.
+const dismissVelocity = 120; // px/ms
+const dismissByVelocityMinOffset = 16; // px
+const dismissAmount = 0.5;
+
+const spring: Transition<number> = {
+  type: 'spring',
+  stiffness: 280,
+  damping: 20,
+  mass: 0.2,
+} as const;
+
+const reducedMotionTween = { type: 'tween', duration: 0.01 } as const;
+
+const animationVariants = {
+  close: { y: window.innerHeight },
+  open: { y: 0 },
+} as const;
+
+const dragConstraints = { top: 0, bottom: window.innerHeight } as const;
+
+const stopPropagation = (e: React.SyntheticEvent) => e.stopPropagation();
+const handleKeyDown = (e: React.KeyboardEvent) => {
+  // Allow "esc" to propagate which lets you escape focus on inputs.
+  if (e.key !== 'Escape') {
+    e.stopPropagation();
+  }
+};
+
+/**
+ * Automatically disable the parent sheet while this sheet is shown. You must
+ * pass `setParentDisabled` to SheetDisabledContext.Provider.
+ */
+function useDisableParent(
+  forceDisabled?: boolean,
+): [disabled: boolean, setParentDisabled: React.Dispatch<React.SetStateAction<boolean>>] {
+  const [disabledByChildSheet, setDisabledByChildSheet] = useState(false);
+  const setParentDisabled = use(SheetDisabledContext);
+
+  const effectivelyDisabled = forceDisabled || disabledByChildSheet;
+
+  useEffect(() => {
+    setParentDisabled(true);
+    return () => setParentDisabled(false);
+  }, [setParentDisabled]);
+
+  return [effectivelyDisabled, setDisabledByChildSheet];
+}
+
+/**
+ * A Sheet is a UI element that comes up from the bottom of the screen,
+ * and can be dragged downward to dismiss
  */
 export default function Sheet({
   header,
   footer,
   children,
   sheetClassName,
-  onClose: onCloseCallback,
-}: Props) {
-  // This component basically doesn't render - it works entirely through setSpring and useDrag.
-  // As a result, our "state" is in refs.
-  // Is this currently closing?
-  const closing = useRef(false);
-  // Should we be dragging?
-  const dragging = useRef(false);
-
-  const windowHeight = window.innerHeight;
-  const headerHeight = useMemo(() => document.getElementById('header')!.clientHeight, []);
-  const maxHeight = windowHeight - headerHeight - 16;
-
-  const sheetContents = useRef<HTMLDivElement | null>(null);
-  const sheetContentsRefFn = useLockSheetContents(sheetContents);
-
+  closeButtonClassName,
+  headerClassName,
+  disabled: forceDisabled,
+  zIndex,
+  freezeInitialHeight,
+  allowClickThrough,
+  onClose,
+}: {
+  /** A static, non-scrollable header shown in line with the close button. */
+  header?: SheetContent;
+  /** A static, non-scrollable footer shown at the bottom of the sheet. Good for buttons. */
+  footer?: SheetContent;
+  /** Scrollable contents for the sheet. */
+  children?: SheetContent;
+  /**
+   * Disable the sheet (no clicking, dragging, or close-on-esc). The sheet will
+   * automatically disable itself if another sheet is shown as a child, so no
+   * need to set this explicitly most of the time - pretty much just if you need
+   * to communicate that some "global" sheet like the item picker is up.
+   */
+  disabled?: boolean;
+  // TODO: remove
+  /** Override the z-index of the sheet. Useful when stacking sheets on top of other sheets or on top of the item popup. */
+  zIndex?: number;
+  /** A custom class name to add to the sheet container. */
+  sheetClassName?: string;
+  /** A custom class name to add to the sheet close button. */
+  closeButtonClassName?: string;
+  /** A custom class name to add to the sheet header. */
+  headerClassName?: string;
+  // TODO: remove
+  /** If set, the sheet will always be whatever height it was when first rendered, even if the contents change size. */
+  freezeInitialHeight?: boolean;
+  // TODO: remove by getting a recursive item popup host
+  /**
+   * Allow clicks to escape this sheet. This allows for things like the popups
+   * in the Compare sheet being closed by clicking in the Compare sheet. By
+   * default we block clicks so that clicks in sheets spawned from within an
+   * item popup don't close the popup they were spawned from!
+   */
+  allowClickThrough?: boolean;
+  onClose: () => void;
+  // TODO: "skinny" sheet option
+}) {
   const sheet = useRef<HTMLDivElement>(null);
-  const height = () => sheet.current?.clientHeight || 0;
+  const sheetContents = useRef<HTMLDivElement | null>(null);
 
-  /** When the sheet stops animating, if we were closing, fire the close callback. */
-  const onRest = useCallback(() => {
-    if (closing.current) {
-      onCloseCallback();
-    }
-  }, [onCloseCallback]);
+  const [frozenHeight, setFrozenHeight] = useState<number | undefined>(undefined);
+  const frozenHeightIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const [disabled, setParentDisabled] = useDisableParent(forceDisabled);
 
-  /** This spring is controlled via setSpring, which doesn't trigger re-render. */
-  const [springProps, setSpring] = useSpring(() => ({
-    // Initially transition from offscreen to on
-    from: { transform: `translateY(${windowHeight}px)` },
-    to: { transform: `translateY(0px)` },
-    config: spring,
-    onRest,
-  }));
+  const reducedMotion = Boolean(useReducedMotion());
+  const animationControls = useAnimation();
+  const dragControls = useDragControls();
 
   /**
-   * Closing the sheet sets closing to true and starts an animation to close. We only fire the
-   * outer callback when the animation is done.
+   * Triggering close starts the animation. The onClose prop is called by the callback
+   * passed to the onAnimationComplete motion prop.
    */
-  const onClose = useCallback(
-    (e?) => {
+  const triggerClose = useCallback(
+    (e?: React.MouseEvent | KeyboardEvent) => {
       e?.preventDefault();
-      closing.current = true;
       // Animate offscreen
-      setSpring({ to: { transform: `translateY(${height()}px)` } });
+      animationControls.start('close');
     },
-    [setSpring]
+    [animationControls],
   );
 
   // Handle global escape key
-  useGlobalEscapeKey(onClose);
+  useHotkey('esc', t('Hotkey.ClearDialog'), triggerClose);
 
-  // This handles all drag interaction. The callback is called without re-render.
-  const bindDrag = useDrag(({ event, active, movement, vxvy, last, cancel }) => {
-    event?.stopPropagation();
-
-    // If we haven't enabled dragging, cancel the gesture
-    if (!last && cancel && !dragging.current) {
-      cancel();
-    }
-
-    // How far down should we be positioned?
-    const yDelta = active ? Math.max(0, movement[1]) : 0;
-    // Set immediate (no animation) if we're in a gesture, so it follows your finger precisely
-    setSpring({ immediate: active, to: { transform: `translateY(${yDelta}px)` } });
-
-    // Detect if the gesture ended with a high velocity, or with the sheet more than
-    // dismissAmount percent of the way down - if so, consider it a close gesture.
-    if (last && (movement[1] > (height() || 0) * dismissAmount || vxvy[1] > dismissVelocity)) {
-      onClose();
-    }
-  });
+  // We need to call the onClose callback when then close animation is complete so that
+  // the calling component can unmount the sheet
+  // TODO (ryan/ben) move to using a container component and AnimatePresence
+  const handleAnimationComplete = useCallback(
+    (animationDefinition: 'close' | 'open') => {
+      if (animationDefinition === 'close') {
+        onClose();
+      }
+    },
+    [onClose],
+  );
 
   // Determine when to drag. Drags if the touch falls in the header, or if the contents
   // are scrolled all the way to the top.
-  const dragHandle = useRef<HTMLDivElement>(null);
   const dragHandleDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
-      // prevent item-tag-selector dropdown from triggering drag (Safari)
-      if ((e.target as HTMLElement).classList.contains('item-tag-selector')) {
-        return;
-      }
-
+    (e: React.PointerEvent<HTMLDivElement>) => {
       if (
-        dragHandle.current?.contains(e.target as Node) ||
+        !sheetContents.current!.contains(e.target as Node) ||
         sheetContents.current!.scrollTop === 0
       ) {
-        dragging.current = true;
+        dragControls.start(e);
       }
     },
-    []
+    [dragControls],
   );
 
-  const dragHandleUp = useCallback(() => (dragging.current = false), []);
+  useFixOverscrollBehavior(sheetContents);
 
-  return (
-    <animated.div
-      {...bindDrag()}
-      style={{ ...springProps, maxHeight, touchAction: 'none' }}
-      className={clsx('sheet', sheetClassName)}
+  // When drag ends we determine if the sheet should be closed either via the final
+  // drag velocity or if the sheet has been dragged halfway the down from its height.
+  const handleDragEnd = useCallback(
+    (_event: TouchEvent | MouseEvent | PointerEvent, info: PanInfo) => {
+      const velocity = info.velocity.y / window.devicePixelRatio;
+      const offset = info.offset.y;
+      if (
+        (velocity > dismissVelocity && offset > dismissByVelocityMinOffset) ||
+        (sheet.current && offset > dismissAmount * sheet.current.clientHeight)
+      ) {
+        triggerClose();
+        return;
+      }
+      animationControls.start('open');
+    },
+    [animationControls, triggerClose],
+  );
+
+  useLayoutEffect(() => {
+    clearInterval(frozenHeightIntervalRef.current);
+    if (freezeInitialHeight && sheetContents.current && !frozenHeight) {
+      if (sheetContents.current.clientHeight > 0) {
+        setFrozenHeight(sheetContents.current.clientHeight);
+      } else {
+        const setHeight = () => {
+          if (!sheetContents.current || sheetContents.current.clientHeight === 0) {
+            return false;
+          }
+          setFrozenHeight(sheetContents.current.clientHeight);
+          frozenHeightIntervalRef.current = undefined;
+          return true;
+        };
+        frozenHeightIntervalRef.current = tryRepeatedlyWithLimit(setHeight);
+      }
+    }
+  }, [freezeInitialHeight, frozenHeight]);
+
+  useEffect(() => {
+    animationControls.start('open');
+  }, [animationControls]);
+
+  // Track the total number of sheets that are open (to help prevent reloads while users are doing things)
+  useEffect(() => {
+    sheetsOpen.open++;
+    return () => {
+      sheetsOpen.open--;
+    };
+  }, []);
+
+  const sheetBody = (
+    <motion.div
+      // motion props
+      initial="close"
+      transition={reducedMotion ? reducedMotionTween : spring}
+      animate={animationControls}
+      variants={animationVariants}
+      onAnimationComplete={handleAnimationComplete}
+      drag="y"
+      dragControls={dragControls}
+      dragListener={false}
+      dragConstraints={dragConstraints}
+      dragElastic={0}
+      onDragEnd={disabled ? undefined : handleDragEnd}
+      // regular props
+      style={{ zIndex }}
+      className={clsx(styles.sheet, sheetClassName, { [styles.sheetDisabled]: disabled })}
       ref={sheet}
       role="dialog"
       aria-modal="false"
-      onKeyDown={stopPropagation}
+      onKeyDown={handleKeyDown}
       onKeyUp={stopPropagation}
       onKeyPress={stopPropagation}
-      onClick={stopPropagation}
+      onClick={allowClickThrough ? undefined : stopPropagation}
     >
-      <a href="#" className="sheet-close" onClick={onClose}>
-        <AppIcon icon={disabledIcon} />
-      </a>
-
-      <div
-        className="sheet-container"
-        style={{ maxHeight }}
-        onMouseDown={dragHandleDown}
-        onMouseUp={dragHandleUp}
-        onTouchStart={dragHandleDown}
-        onTouchEnd={dragHandleUp}
+      <button
+        type="button"
+        className={clsx(styles.close, closeButtonClassName, { [styles.noHeader]: !header })}
+        onClick={triggerClose}
+        aria-keyshortcuts="esc"
+        aria-label={t('General.Close')}
       >
-        {header && (
-          <div className="sheet-header" ref={dragHandle}>
-            {_.isFunction(header) ? header({ onClose }) : header}
+        <AppIcon icon={disabledIcon} />
+      </button>
+
+      <div className={styles.container} onPointerDown={disabled ? undefined : dragHandleDown}>
+        {Boolean(header) && (
+          <div className={clsx(styles.header, headerClassName)}>
+            {typeof header === 'function' ? header({ onClose: triggerClose }) : header}
           </div>
         )}
 
         <div
-          className={clsx('sheet-contents', { 'sheet-has-footer': footer })}
-          ref={sheetContentsRefFn}
+          className={styles.contents}
+          style={frozenHeight ? { flexBasis: frozenHeight } : undefined}
+          ref={sheetContents}
         >
-          {_.isFunction(children) ? children({ onClose }) : children}
+          <ErrorBoundary name="sheet-contents">
+            {typeof children === 'function' ? children({ onClose: triggerClose }) : children}
+          </ErrorBoundary>
         </div>
 
-        {footer && (
-          <div className="sheet-footer">{_.isFunction(footer) ? footer({ onClose }) : footer}</div>
+        {Boolean(footer) && (
+          <div className={styles.footer}>
+            {typeof footer === 'function' ? footer({ onClose: triggerClose }) : footer}
+          </div>
         )}
       </div>
-    </animated.div>
+      <div
+        className={styles.disabledScreen}
+        onClick={stopPropagation}
+        onPointerDown={stopPropagation}
+      />
+    </motion.div>
+  );
+
+  return (
+    <Portal>
+      <SheetDisabledContext value={setParentDisabled}>
+        <PressTipRoot value={sheet}>
+          <ItemPickerContainer>
+            <SingleVendorSheetContainer>{sheetBody}</SingleVendorSheetContainer>
+          </ItemPickerContainer>
+        </PressTipRoot>
+      </SheetDisabledContext>
+    </Portal>
   );
 }
 
-/**
- * Fire a callback if the escape key is pressed.
- */
-function useGlobalEscapeKey(onEscapePressed: () => void) {
-  useEffect(() => {
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        onEscapePressed();
-        return false;
-      }
-    };
-    document.body.addEventListener('keyup', onKeyUp);
-    return () => document.body.removeEventListener('keyup', onKeyUp);
-  }, [onEscapePressed]);
-}
-
-/**
- * Locks body scroll except for touches in the sheet contents, and adds a block-events
- * touch handler to sheeet contents.
- */
-function useLockSheetContents(sheetContents: React.MutableRefObject<HTMLDivElement | null>) {
-  /** Block touch/click events for the inner scrolling area if it's not at the top. */
-  const blockEvents = useCallback(
-    (e: TouchEvent | React.MouseEvent) => {
-      if (sheetContents.current!.scrollTop !== 0) {
-        e.stopPropagation();
-      }
-    },
-    [sheetContents]
-  );
-
-  // Use a ref callback to set up the ref immediately upon render
-  const sheetContentsRefFn = useCallback(
-    (contents: HTMLDivElement) => {
-      sheetContents.current = contents;
-      if (sheetContents.current) {
-        sheetContents.current.addEventListener('touchstart', blockEvents);
-        if (mobile) {
-          document.body.classList.add('body-scroll-lock');
-          enableBodyScroll(sheetContents.current);
-          disableBodyScroll(sheetContents.current);
-        }
-      }
-    },
-    [blockEvents, sheetContents]
-  );
-
-  useEffect(
-    () => () => {
-      if (sheetContents.current) {
-        setTimeout(() => {
-          document.body.classList.remove('body-scroll-lock');
-        }, 0);
-        sheetContents.current.removeEventListener('touchstart', blockEvents);
-        if (mobile) {
-          enableBodyScroll(sheetContents.current);
-        }
-      }
-    },
-    [blockEvents, sheetContents]
-  );
-
-  return sheetContentsRefFn;
+function tryRepeatedlyWithLimit(callback: () => boolean, timeout = 500, limit = 5_000) {
+  let totalTime = 0;
+  return setInterval(() => {
+    if (totalTime > limit) {
+      return;
+    }
+    const res = callback();
+    totalTime += timeout;
+    if (res) {
+      return;
+    }
+  }, timeout);
 }

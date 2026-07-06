@@ -1,27 +1,38 @@
-import React from 'react';
-import ReactDOM from 'react-dom';
-
-import './app/google';
-import './app/utils/exceptions';
-
+// organize-imports-ignore
+// We want our main CSS to load before all other CSS.
 import './app/main.scss';
-
-import { initi18n } from './app/i18n';
-
-import registerServiceWorker from './app/register-service-worker';
-import { safariTouchFix } from './app/safari-touch-fix';
+// Pull the sheet CSS up so it is at the top of the stylesheet and can be easily overridden.
+import './app/dim-ui/Sheet.m.scss';
+import './app/utils/sentry';
+import { createSaveAccountsObserver } from 'app/accounts/observers';
+import {
+  createItemSizeObserver,
+  createOrnamentDisplayObserver,
+  createThemeObserver,
+  createTilesPerCharColumnObserver,
+  setCssVariableEventListeners,
+} from 'app/css-variables';
+import { loadDimApiData } from 'app/dim-api/actions';
+import store from 'app/store/store';
+import { lazyLoadStreamDeck, startStreamDeckConnection } from 'app/stream-deck/stream-deck';
+import { infoLog } from 'app/utils/log';
+import { createRoot } from 'react-dom/client';
+import { Provider } from 'react-redux';
+import { StorageBroken, storageTest } from './StorageTest';
 import Root from './app/Root';
 import setupRateLimiter from './app/bungie-api/rate-limit-config';
-import { watchLanguageChanges } from './app/settings/observers';
-import { saveReviewsToIndexedDB } from './app/item-review/observers';
-import { saveWishListToIndexedDB } from './app/wishlists/observers';
-import { saveAccountsToIndexedDB } from 'app/accounts/observers';
-import updateCSSVariables from 'app/css-variables';
-import { saveVendorDropsToIndexedDB } from 'app/vendorEngramsXyzApi/observers';
-import store from 'app/store/store';
-import { loadDimApiData } from 'app/dim-api/actions';
-import { saveItemInfosOnStateChange } from 'app/inventory/observers';
+import { initGoogleAnalytics } from './app/google';
+import { createLanguageObserver, initi18n } from './app/i18n';
+import registerServiceWorker from './app/register-service-worker';
+import { safariTouchFix } from './app/safari-touch-fix';
+import { createWishlistObserver } from './app/wishlists/observers';
+import { observe } from 'app/store/observerMiddleware';
+infoLog(
+  'app',
+  `DIM v${$DIM_VERSION} (${$DIM_FLAVOR}) - Please report any errors to https://www.github.com/DestinyItemManager/DIM/issues`,
+);
 
+initGoogleAnalytics();
 safariTouchFix();
 
 if ($DIM_FLAVOR !== 'dev') {
@@ -29,29 +40,48 @@ if ($DIM_FLAVOR !== 'dev') {
 }
 
 setupRateLimiter();
-if ($featureFlags.reviewsEnabled) {
-  saveReviewsToIndexedDB();
-}
-if ($featureFlags.wishLists) {
-  saveWishListToIndexedDB();
-}
-saveAccountsToIndexedDB();
-if ($featureFlags.vendorEngrams) {
-  saveVendorDropsToIndexedDB();
-}
-updateCSSVariables();
 
-store.dispatch(loadDimApiData());
+const i18nPromise = initi18n();
 
-saveItemInfosOnStateChange();
+(async () => {
+  const root = createRoot(document.getElementById('app')!);
 
-initi18n().then(() => {
-  // Settings depends on i18n
-  watchLanguageChanges();
+  // Block on testing that we can use LocalStorage and IDB, before everything starts trying to use it
+  const storageWorks = await storageTest();
+  if (!storageWorks) {
+    // Make sure localization is loaded
+    await i18nPromise;
+    root.render(
+      <Provider store={store}>
+        <StorageBroken />
+      </Provider>,
+    );
+    return;
+  }
 
-  console.log(
-    `DIM v${$DIM_VERSION} (${$DIM_FLAVOR}) - Please report any errors to https://www.github.com/DestinyItemManager/DIM/issues`
-  );
+  if ($featureFlags.wishLists) {
+    store.dispatch(observe(createWishlistObserver()));
+  }
+  store.dispatch(observe(createSaveAccountsObserver()));
+  store.dispatch(observe(createItemSizeObserver()));
+  store.dispatch(observe(createOrnamentDisplayObserver()));
+  store.dispatch(observe(createThemeObserver()));
+  store.dispatch(observe(createTilesPerCharColumnObserver()));
+  setCssVariableEventListeners();
 
-  ReactDOM.render(<Root />, document.getElementById('app'));
-});
+  store.dispatch(loadDimApiData());
+
+  if ($featureFlags.elgatoStreamDeck && store.getState().streamDeck.enabled) {
+    await lazyLoadStreamDeck();
+    store.dispatch(startStreamDeckConnection());
+  }
+
+  // Make sure localization is loaded
+  await i18nPromise;
+
+  // Update the language in both i18n and local storage when the user
+  // changes the language setting.
+  store.dispatch(observe(createLanguageObserver()));
+
+  root.render(<Root />);
+})();

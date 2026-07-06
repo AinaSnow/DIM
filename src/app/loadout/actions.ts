@@ -1,9 +1,6 @@
 import { createAction } from 'typesafe-actions';
 import { Loadout } from './loadout-types';
 
-/** Bulk update loadouts after they've been loaded. */
-export const loaded = createAction('loadouts/LOADED')<Loadout[]>();
-
 /** Delete a loadout by ID */
 export const deleteLoadout = createAction('loadouts/DELETE')<string>();
 
@@ -15,4 +12,9 @@ export const savePreviousLoadout = createAction('loadouts/SAVE_PREVIOUS')<{
   storeId: string;
   loadoutId: string;
   previousLoadout: Loadout;
+}>();
+
+/** Updates the store in use on the loadout page */
+export const updateLoadoutStore = createAction('loadouts/UPDATE_STORE')<{
+  storeId: string | undefined;
 }>();

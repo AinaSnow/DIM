@@ -1,68 +1,40 @@
-import React, { useEffect, useRef, useReducer } from 'react';
-import './InfusionFinder.scss';
-import { DimItem } from '../inventory/item-types';
-import { showInfuse$ } from './infuse';
-import Sheet from '../dim-ui/Sheet';
-import { AppIcon, plusIcon, helpIcon, faRandom, faEquals, faArrowCircleDown } from '../shell/icons';
-import ConnectedInventoryItem from '../inventory/ConnectedInventoryItem';
-import copy from 'fast-copy';
-import { storesSelector, currentStoreSelector } from '../inventory/selectors';
-import { DimStore } from '../inventory/store-types';
-import { RootState } from 'app/store/types';
-import _ from 'lodash';
-import { reverseComparator, compareBy, chainComparator } from '../utils/comparators';
-import { newLoadout, convertToLoadoutItem } from '../loadout/loadout-utils';
-import { connect } from 'react-redux';
+import { InfuseDirection } from '@destinyitemmanager/dim-api-types';
+import { gaPageView } from 'app/google';
 import { t } from 'app/i18next-t';
-import clsx from 'clsx';
-import SearchFilterInput from '../search/SearchFilterInput';
-import { SearchFilters, searchFiltersConfigSelector } from '../search/search-filter';
-import { setSetting } from '../settings/actions';
-import { showNotification } from '../notifications/notifications';
-import { applyLoadout } from 'app/loadout/loadout-apply';
-import { settingsSelector } from 'app/settings/reducer';
-import { InfuseDirection, DestinyVersion } from '@destinyitemmanager/dim-api-types';
+import { applyLoadout } from 'app/loadout-drawer/loadout-apply';
 import { LoadoutItem } from 'app/loadout/loadout-types';
-import { useSubscription } from 'app/utils/hooks';
+import SearchBar from 'app/search/SearchBar';
+import { filterFactorySelector } from 'app/search/items/item-search-filter';
+import { useSetting } from 'app/settings/hooks';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { DimThunkDispatch } from 'app/store/types';
+import { useEventBusListener } from 'app/utils/hooks';
+import { isD1Item } from 'app/utils/item-utils';
+import clsx from 'clsx';
+import { useCallback, useDeferredValue, useEffect, useReducer } from 'react';
+import { useSelector } from 'react-redux';
 import { useLocation } from 'react-router';
+import Sheet from '../dim-ui/Sheet';
+import '../inventory-page/StoreBucket.scss';
+import ConnectedInventoryItem from '../inventory/ConnectedInventoryItem';
+import { DimItem } from '../inventory/item-types';
+import { allItemsSelector, currentStoreSelector, getTagSelector } from '../inventory/selectors';
+import { DimStore } from '../inventory/store-types';
+import { convertToLoadoutItem, newLoadout } from '../loadout-drawer/loadout-utils';
+import { showNotification } from '../notifications/notifications';
+import { AppIcon, faArrowCircleDown, faEquals, faRandom, helpIcon, plusIcon } from '../shell/icons';
+import { chainComparator, compareBy, reverseComparator } from '../utils/comparators';
+import * as styles from './InfusionFinder.m.scss';
+import { showInfuse$ } from './infuse';
 
 const itemComparator = chainComparator(
-  reverseComparator(compareBy((item: DimItem) => item.primStat!.value)),
+  reverseComparator(compareBy((item: DimItem) => item.power)),
   compareBy((item: DimItem) =>
-    item.isDestiny1() && item.talentGrid
+    isD1Item(item) && item.talentGrid
       ? (item.talentGrid.totalXP / item.talentGrid.totalXPRequired) * 0.5
-      : 0
-  )
+      : 0,
+  ),
 );
-
-interface ProvidedProps {
-  destinyVersion: DestinyVersion;
-}
-
-interface StoreProps {
-  stores: DimStore[];
-  currentStore: DimStore;
-  filters: SearchFilters;
-  lastInfusionDirection: InfuseDirection;
-  isPhonePortrait: boolean;
-}
-
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    stores: storesSelector(state),
-    currentStore: currentStoreSelector(state)!,
-    filters: searchFiltersConfigSelector(state),
-    lastInfusionDirection: settingsSelector(state).infusionDirection,
-    isPhonePortrait: state.shell.isPhonePortrait,
-  };
-}
-
-const mapDispatchToProps = {
-  setSetting,
-};
-type DispatchProps = typeof mapDispatchToProps;
-
-type Props = ProvidedProps & StoreProps & DispatchProps;
 
 interface State {
   direction: InfuseDirection;
@@ -72,8 +44,6 @@ interface State {
   source?: DimItem;
   /** The item that will have its power increased by infusion */
   target?: DimItem;
-  /** Initial height of the sheet, to prevent it resizing */
-  height?: number;
   /** Search filter string */
   filter: string;
 }
@@ -87,7 +57,6 @@ type Action =
   | { type: 'swapDirection' }
   /** Select one of the items in the list */
   | { type: 'selectItem'; item: DimItem }
-  | { type: 'setHeight'; height: number }
   | { type: 'setFilter'; filter: string };
 
 /**
@@ -102,7 +71,6 @@ function stateReducer(state: State, action: Action): State {
         source: undefined,
         target: undefined,
         filter: '',
-        height: undefined,
       };
     case 'init': {
       const direction =
@@ -111,8 +79,8 @@ function stateReducer(state: State, action: Action): State {
             ? InfuseDirection.INFUSE
             : InfuseDirection.FUEL
           : action.hasFuel
-          ? InfuseDirection.FUEL
-          : InfuseDirection.INFUSE;
+            ? InfuseDirection.FUEL
+            : InfuseDirection.INFUSE;
 
       return {
         ...state,
@@ -147,12 +115,6 @@ function stateReducer(state: State, action: Action): State {
         };
       }
     }
-    case 'setHeight': {
-      return {
-        ...state,
-        height: action.height,
-      };
-    }
     case 'setFilter': {
       return {
         ...state,
@@ -162,42 +124,49 @@ function stateReducer(state: State, action: Action): State {
   }
 }
 
-function InfusionFinder({
-  stores,
-  currentStore,
-  filters,
-  isPhonePortrait,
-  lastInfusionDirection,
-}: Props) {
-  const itemContainer = useRef<HTMLDivElement>(null);
-  const [{ direction, query, source, target, height, filter }, stateDispatch] = useReducer(
+export default function InfusionFinder() {
+  const dispatch = useThunkDispatch();
+  const allItems = useSelector(allItemsSelector);
+  const currentStore = useSelector(currentStoreSelector);
+  const getTag = useSelector(getTagSelector);
+  const filters = useSelector(filterFactorySelector);
+  const [lastInfusionDirection, setLastInfusionDirection] = useSetting('infusionDirection');
+
+  const [{ direction, query, source, target, filter: liveFilter }, stateDispatch] = useReducer(
     stateReducer,
     {
       direction: lastInfusionDirection,
       filter: '',
-    }
+    },
   );
+  const filter = useDeferredValue(liveFilter);
 
   const reset = () => stateDispatch({ type: 'reset' });
   const selectItem = (item: DimItem) => stateDispatch({ type: 'selectItem', item });
   const onQueryChanged = (filter: string) => stateDispatch({ type: 'setFilter', filter });
   const switchDirection = () => stateDispatch({ type: 'swapDirection' });
+  const show = query !== undefined;
 
-  // Listen for items coming in via showInfuse#
-  useSubscription(() =>
-    showInfuse$.subscribe(({ item }) => {
-      const hasInfusables = stores.some((store) => store.items.some((i) => isInfusable(item, i)));
-      const hasFuel = stores.some((store) => store.items.some((i) => isInfusable(i, item)));
-      stateDispatch({ type: 'init', item, hasInfusables: hasInfusables, hasFuel });
-    })
-  );
+  const destinyVersion = currentStore?.destinyVersion;
 
-  // Track the initial height of the sheet
   useEffect(() => {
-    if (itemContainer.current && !height) {
-      stateDispatch({ type: 'setHeight', height: itemContainer.current.clientHeight });
+    if (show && destinyVersion) {
+      gaPageView(`/profileMembershipId/d${destinyVersion}/infuse`);
     }
-  }, [height]);
+  }, [destinyVersion, show]);
+
+  // Listen for items coming in via showInfuse$
+  useEventBusListener(
+    showInfuse$,
+    useCallback(
+      (item) => {
+        const hasInfusables = allItems.some((i) => isInfusable(item, i));
+        const hasFuel = allItems.some((i) => isInfusable(i, item));
+        stateDispatch({ type: 'init', item, hasInfusables: hasInfusables, hasFuel });
+      },
+      [allItems],
+    ),
+  );
 
   // Close the sheet on navigation
   const { pathname } = useLocation();
@@ -205,24 +174,22 @@ function InfusionFinder({
 
   // Save direction to settings
   useEffect(() => {
-    if (direction != lastInfusionDirection) {
-      setSetting('infusionDirection', direction);
+    if (direction !== lastInfusionDirection) {
+      setLastInfusionDirection(direction);
     }
-  }, [direction, lastInfusionDirection]);
+  }, [direction, lastInfusionDirection, dispatch, setLastInfusionDirection]);
 
-  if (!query) {
+  if (!query || !currentStore) {
     return null;
   }
 
-  const filterFn = filters.filterFunction(filter);
+  const filterFn = filters(filter);
 
-  let items = stores.flatMap((store) =>
-    store.items.filter(
-      (item) =>
-        (direction === InfuseDirection.INFUSE
-          ? isInfusable(query, item)
-          : isInfusable(item, query)) && filterFn(item)
-    )
+  let items = allItems.filter(
+    (item) =>
+      (direction === InfuseDirection.INFUSE
+        ? isInfusable(query, item)
+        : isInfusable(item, query)) && filterFn(item),
   );
 
   const dupes = items.filter((item) => item.hash === query.hash);
@@ -230,18 +197,26 @@ function InfusionFinder({
   items = items.filter((item) => item.hash !== query.hash);
   items.sort(itemComparator);
 
+  const preferredSource =
+    dupes.find((i) => getTag(i) === 'infuse') || items.find((i) => getTag(i) === 'infuse');
   const effectiveTarget = target || dupes[0] || items[0];
-  const effectiveSource = source || dupes[0] || items[0];
+  const effectiveSource = source || preferredSource || dupes[0] || items[0];
 
   let result: DimItem | undefined;
-  if (effectiveSource?.primStat && effectiveTarget?.primStat) {
-    const infused = effectiveSource.primStat?.value || 0;
-    result = copy(effectiveTarget);
-    (result as any).primStat.value = infused;
+  if (effectiveSource?.power && effectiveTarget?.power) {
+    const infused = effectiveSource.power;
+    result = {
+      ...effectiveTarget,
+      power: infused,
+      primaryStat: {
+        ...effectiveTarget.primaryStat!,
+        value: infused,
+      },
+    };
   }
 
   const missingItem = (
-    <div className="item missingItem">
+    <div className={clsx('item', styles.missingItem)}>
       <div className="item-img">
         <AppIcon icon={helpIcon} />
       </div>
@@ -249,12 +224,8 @@ function InfusionFinder({
     </div>
   );
 
-  // On iOS at least, focusing the keyboard pushes the content off the screen
-  const autoFocus =
-    !isPhonePortrait && !(/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream);
-
-  const header = ({ onClose }: { onClose(): void }) => (
-    <div className="infuseHeader">
+  const header = ({ onClose }: { onClose: () => void }) => (
+    <div className={styles.infuseHeader}>
       <h1>
         {direction === InfuseDirection.INFUSE
           ? t('Infusion.InfuseTarget', {
@@ -264,20 +235,20 @@ function InfusionFinder({
               name: query.name,
             })}
       </h1>
-      <div className="infusionControls">
-        <div className="infuseTopRow">
-          <div className="infusionEquation">
+      <div className={styles.infusionControls}>
+        <div className={styles.infuseTopRow}>
+          <div className={styles.infusionEquation}>
             {effectiveTarget ? <ConnectedInventoryItem item={effectiveTarget} /> : missingItem}
-            <div className="icon">
+            <div className={styles.icon}>
               <AppIcon icon={plusIcon} />
             </div>
             {effectiveSource ? <ConnectedInventoryItem item={effectiveSource} /> : missingItem}
-            <div className="icon">
+            <div className={styles.icon}>
               <AppIcon icon={faEquals} />
             </div>
             {result ? <ConnectedInventoryItem item={result} /> : missingItem}
           </div>
-          <div className="infuseActions">
+          <div className={styles.infuseActions}>
             <button type="button" className="dim-button" onClick={switchDirection}>
               <AppIcon icon={faRandom} /> {t('Infusion.SwitchDirection')}
             </button>
@@ -286,7 +257,7 @@ function InfusionFinder({
                 type="button"
                 className="dim-button"
                 onClick={() =>
-                  transferItems(currentStore, onClose, effectiveSource, effectiveTarget)
+                  transferItems(dispatch, currentStore, onClose, effectiveSource, effectiveTarget)
                 }
               >
                 <AppIcon icon={faArrowCircleDown} /> {t('Infusion.TransferItems')}
@@ -294,44 +265,38 @@ function InfusionFinder({
             )}
           </div>
         </div>
-        <div className="infuseSearch">
-          <SearchFilterInput
-            onQueryChanged={onQueryChanged}
-            placeholder="Filter items"
-            autoFocus={autoFocus}
-          />
-        </div>
+        <SearchBar
+          className={styles.infuseSearch}
+          onQueryChanged={onQueryChanged}
+          placeholder={t('Infusion.Filter')}
+          instant
+        />
       </div>
     </div>
   );
 
+  const renderItem = (item: DimItem) => (
+    <div
+      key={item.id}
+      className={clsx({ [styles.infuseSelected]: item === target })}
+      onClick={() => selectItem(item)}
+    >
+      <ConnectedInventoryItem item={item} />
+    </div>
+  );
+
   return (
-    <Sheet onClose={reset} header={header} sheetClassName="infuseDialog">
-      <div className="infuseSources" ref={itemContainer} style={{ height }}>
+    <Sheet
+      onClose={reset}
+      header={header}
+      sheetClassName={styles.infuseDialog}
+      freezeInitialHeight={true}
+    >
+      <div className={styles.infuseSources}>
         {items.length > 0 || dupes.length > 0 ? (
           <>
-            <div className="sub-bucket">
-              {dupes.map((item) => (
-                <div
-                  key={item.id}
-                  className={clsx({ 'infuse-selected': item === target })}
-                  onClick={() => selectItem(item)}
-                >
-                  <ConnectedInventoryItem item={item} />
-                </div>
-              ))}
-            </div>
-            <div className="sub-bucket">
-              {items.map((item) => (
-                <div
-                  key={item.id}
-                  className={clsx({ 'infuse-selected': item === target })}
-                  onClick={() => selectItem(item)}
-                >
-                  <ConnectedInventoryItem item={item} />
-                </div>
-              ))}
-            </div>
+            <div className="sub-bucket">{dupes.map(renderItem)}</div>
+            <div className="sub-bucket">{items.map(renderItem)}</div>
           </>
         ) : (
           <strong>{t('Infusion.NoItems')}</strong>
@@ -341,11 +306,6 @@ function InfusionFinder({
   );
 }
 
-export default connect<StoreProps, DispatchProps>(
-  mapStateToProps,
-  mapDispatchToProps
-)(InfusionFinder);
-
 /**
  * Can source be infused into target?
  */
@@ -354,28 +314,23 @@ function isInfusable(target: DimItem, source: DimItem) {
     return false;
   }
 
-  if (source.isDestiny1() && target.isDestiny1()) {
-    return source.type === target.type && target.primStat!.value < source.primStat!.value;
-  } else if (source.isDestiny2() && target.isDestiny2()) {
-    return (
-      source.infusionQuality &&
-      target.infusionQuality &&
-      target.infusionQuality.infusionCategoryHashes.some((h) =>
-        source.infusionQuality!.infusionCategoryHashes.includes(h)
-      ) &&
-      target.basePower < source.basePower
-    );
+  if (source.destinyVersion === 1 && target.destinyVersion === 1) {
+    return source.bucket.hash === target.bucket.hash && target.power < source.power;
   }
 
-  // Don't try to apply logic for unknown Destiny versions.
-  return false;
+  return (
+    source.infusionCategoryHashes &&
+    target.infusionCategoryHashes?.some((h) => source.infusionCategoryHashes!.includes(h)) &&
+    target.power < source.power
+  );
 }
 
 async function transferItems(
+  dispatch: DimThunkDispatch,
   currentStore: DimStore,
   onClose: () => void,
   source: DimItem,
-  target: DimItem
+  target: DimItem,
 ) {
   if (!source || !target) {
     return;
@@ -396,22 +351,22 @@ async function transferItems(
     convertToLoadoutItem(source, source.equipped),
   ];
 
-  if (source.isDestiny1()) {
-    if (target.bucket.sort === 'General') {
+  if (source.destinyVersion === 1) {
+    if (target.bucket.inGeneral) {
       // Mote of Light
       items.push({
         id: '0',
         hash: 937555249,
         amount: 2,
-        equipped: false,
+        equip: false,
       });
-    } else if (target.bucket.sort === 'Weapons') {
+    } else if (target.bucket.inWeapons) {
       // Weapon Parts
       items.push({
         id: '0',
         hash: 1898539128,
         amount: 10,
-        equipped: false,
+        equip: false,
       });
     } else {
       // Armor Materials
@@ -419,7 +374,7 @@ async function transferItems(
         id: '0',
         hash: 1542293174,
         amount: 10,
-        equipped: false,
+        equip: false,
       });
     }
     if (source.isExotic) {
@@ -428,7 +383,7 @@ async function transferItems(
         id: '0',
         hash: 452597397,
         amount: 1,
-        equipped: false,
+        equip: false,
       });
     }
   }
@@ -436,5 +391,5 @@ async function transferItems(
   // TODO: another one where we want to respect equipped
   const loadout = newLoadout(t('Infusion.InfusionMaterials'), items);
 
-  await applyLoadout(currentStore, loadout);
+  await dispatch(applyLoadout(currentStore, loadout));
 }

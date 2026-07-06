@@ -1,44 +1,42 @@
-import React from 'react';
-import './Account.scss';
-import { DestinyAccount, PLATFORM_ICONS } from './destiny-account';
+import { compareBy } from 'app/utils/comparators';
+import { BungieMembershipType } from 'bungie-api-ts/destiny2';
 import clsx from 'clsx';
-import { AppIcon, collapseIcon } from '../shell/icons';
-import _ from 'lodash';
+import { AppIcon } from '../shell/icons';
+import * as styles from './Account.m.scss';
+import { DestinyAccount, PLATFORM_ICONS, PLATFORM_LABELS } from './destiny-account';
 
-function Account(
-  {
-    account,
-    selected,
-    className,
-    ...other
-  }: {
-    account: DestinyAccount;
-    selected?: boolean;
-    className?: string;
-  } & React.HTMLAttributes<HTMLDivElement>,
-  ref?: React.Ref<HTMLDivElement>
-) {
+/**
+ * Accounts that appear in the hamburger menu.
+ */
+export default function Account({
+  account,
+  selected,
+  className,
+}: {
+  account: DestinyAccount;
+  selected?: boolean;
+  className?: string;
+}) {
   return (
     <div
-      ref={ref}
-      className={clsx('account', className, { 'selected-account': selected })}
-      {...other}
+      className={clsx(styles.account, className, { [styles.selectedAccount]: selected })}
       role="menuitem"
     >
-      <div className="account-name">{account.displayName}</div>
-      <div className="account-details">
-        <b>{account.destinyVersion === 1 ? 'D1' : 'D2'}</b>
-        {account.platforms.map((platformType, index) => (
-          <AppIcon
-            key={platformType}
-            className={index === 0 ? 'first' : ''}
-            icon={PLATFORM_ICONS[platformType]}
-          />
-        ))}
-      </div>
-      {selected && <AppIcon className="collapse" icon={collapseIcon} />}
+      Destiny {account.destinyVersion}
+      {account.platforms
+        .filter((p) => account.platforms.length === 1 || p !== BungieMembershipType.TigerStadia)
+        .sort(compareBy((p) => account.originalPlatformType !== p))
+        .map((platformType, index) =>
+          platformType in PLATFORM_ICONS ? (
+            <AppIcon
+              key={platformType}
+              className={clsx({ [styles.first]: index === 0 })}
+              icon={PLATFORM_ICONS[platformType]!}
+            />
+          ) : (
+            PLATFORM_LABELS[platformType]
+          ),
+        )}
     </div>
   );
 }
-
-export default React.forwardRef(Account);

@@ -1,130 +1,118 @@
-import React from 'react';
-import { t } from 'app/i18next-t';
-import { DimItem } from './item-types';
-import { getColor } from '../shell/filters';
-import ghostPerks from 'data/d2/ghost-perks.json';
-import _ from 'lodash';
-import { weakMemoize } from 'app/utils/util';
-import RatingIcon from './RatingIcon';
-import clsx from 'clsx';
-import styles from './BadgeInfo.m.scss';
-import iconStyles from 'app/inventory/ElementIcon.m.scss';
-import ElementIcon from './ElementIcon';
-import { UiWishListRoll } from 'app/wishlists/wishlists';
+import { TOTAL_STAT_HASH } from 'app/search/d2-known-values';
+import { getD1QualityColor } from 'app/shell/formatters';
+import { isD1Item } from 'app/utils/item-utils';
+import { InventoryWishListRoll, toUiWishListRoll } from 'app/wishlists/wishlists';
 import { DamageType } from 'bungie-api-ts/destiny2';
-import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import clsx from 'clsx';
+import { BucketHashes } from 'data/d2/generated-enums';
+import { useSelector } from 'react-redux';
+import ElementIcon from '../dim-ui/ElementIcon';
+import * as styles from './BadgeInfo.m.scss';
+import RatingIcon from './RatingIcon';
+import { DimItem } from './item-types';
+import { notesSelector } from './selectors';
 
 interface Props {
   item: DimItem;
   isCapped: boolean;
-  /** Rating value */
-  rating?: number;
-  uiWishListRoll?: UiWishListRoll;
+  wishlistRoll?: InventoryWishListRoll;
 }
 
-const getGhostInfos = weakMemoize((item: DimItem) =>
-  item.isDestiny2?.() && item.sockets && item.itemCategoryHashes.includes(ItemCategoryHashes.Ghost)
-    ? _.compact(
-        item.sockets.allSockets.map((s) => {
-          const hash = s.plugged?.plugDef?.hash;
-          return hash && ghostPerks[hash];
-        })
-      )
-    : []
-);
-
-export function hasBadge(item?: DimItem | null): boolean {
-  if (!item) {
-    return false;
-  }
-  return (
-    Boolean(item.primStat?.value) ||
-    item.classified ||
-    (item.objectives && !item.complete && !item.hidePercentage) ||
-    (item.maxStackSize > 1 && item.amount > 1) ||
-    item.itemCategoryHashes?.includes(ItemCategoryHashes.Ghost)
-  );
-}
-
-export default function BadgeInfo({ item, isCapped, rating, uiWishListRoll }: Props) {
-  const isBounty = Boolean(!item.primStat && item.objectives);
+export function shouldShowBadge(item: DimItem) {
+  const isBounty = Boolean(!item.primaryStat && item.objectives);
   const isStackable = Boolean(item.maxStackSize > 1);
-  // treat D1 ghosts as generic items
-  const isGhost = Boolean(
-    item.isDestiny2?.() && item.itemCategoryHashes?.includes(ItemCategoryHashes.Ghost)
-  );
-  const isGeneric = !isBounty && !isStackable && !isGhost;
-
-  const ghostInfos = getGhostInfos(item);
+  const isGeneric = !isBounty && !isStackable;
 
   const hideBadge = Boolean(
+    item.location.hash === BucketHashes.Subclass ||
+    (item.isEngram && item.location.hash === BucketHashes.Engrams) ||
     (isBounty && (item.complete || item.hidePercentage)) ||
-      (isStackable && item.amount === 1) ||
-      (isGhost && !ghostInfos.length && !item.classified) ||
-      (isGeneric && !item.primStat?.value && !item.classified)
+    (isStackable && item.amount === 1) ||
+    (isGeneric && !item.primaryStat?.value && !item.classified),
+  );
+
+  return !hideBadge;
+}
+
+export default function BadgeInfo({ item, isCapped, wishlistRoll }: Props) {
+  const isBounty = Boolean(!item.primaryStat && item.objectives);
+  const isStackable = Boolean(item.maxStackSize > 1);
+  const isGeneric = !isBounty && !isStackable;
+  // For vendor armor that reports stats (thus often randomized),
+  // show the total points as a means to indicate whether it's worth picking up
+  const totalArmorStat =
+    item.bucket?.inArmor &&
+    item.vendor &&
+    item.stats?.find((stat) => stat.statHash === TOTAL_STAT_HASH);
+
+  const hideBadge = Boolean(
+    item.location.hash === BucketHashes.Subclass ||
+    (item.isEngram && item.location.hash === BucketHashes.Engrams) ||
+    (isBounty && (item.complete || item.hidePercentage)) ||
+    (isStackable && item.amount === 1) ||
+    (isGeneric && !item.primaryStat?.value && !item.classified),
   );
 
   if (hideBadge) {
     return null;
   }
 
-  const badgeclsx = {
-    [styles.fullstack]: isStackable && item.amount === item.maxStackSize,
-    [styles.capped]: isCapped,
-    [styles.masterwork]: item.masterwork,
-  };
-
   const badgeContent =
     (isBounty && `${Math.floor(100 * item.percentComplete)}%`) ||
     (isStackable && item.amount.toString()) ||
-    (isGhost && ghostBadgeContent(item)) ||
-    (isGeneric && item.primStat?.value.toString()) ||
-    (item.classified && '???');
+    (totalArmorStat && totalArmorStat.value.toString()) ||
+    (isGeneric && item.primaryStat?.value.toString()) ||
+    (item.classified && <ClassifiedNotes item={item} />);
 
-  const reviewclsx = {
-    [styles.review]: true,
-    [styles.wishlistRoll]: uiWishListRoll,
-  };
+  const fixContrast =
+    item.element &&
+    (item.element.enumValue === DamageType.Arc ||
+      item.element.enumValue === DamageType.Void ||
+      item.element.enumValue === DamageType.Strand);
+
+  const wishlistRollIcon = toUiWishListRoll(wishlistRoll);
+  const summaryIcon = wishlistRollIcon !== undefined && (
+    <RatingIcon uiWishListRoll={wishlistRollIcon} />
+  );
 
   return (
-    <div className={clsx(styles.badge, badgeclsx)}>
-      {item.isDestiny1() && item.quality && (
-        <div className={styles.quality} style={getColor(item.quality.min, 'backgroundColor')}>
+    <div
+      className={clsx(styles.badge, {
+        [styles.fullstack]: isStackable && item.amount === item.maxStackSize,
+        [styles.capped]: isCapped,
+        [styles.masterwork]: item.masterwork,
+        [styles.deepsight]: item.deepsightInfo,
+        [styles.engram]: item.isEngram,
+      })}
+    >
+      {isD1Item(item) && item.quality && (
+        <div
+          className={styles.quality}
+          style={getD1QualityColor(item.quality.min, 'backgroundColor')}
+        >
           {item.quality.min}%
         </div>
       )}
-      {(rating !== undefined || uiWishListRoll) && (
-        <div className={clsx(reviewclsx)}>
-          <RatingIcon rating={rating || 1} uiWishListRoll={uiWishListRoll} />
-        </div>
-      )}
-      <div className={styles.primaryStat}>
-        {/*
-        // this is where the item's total energy capacity would go if we could just add things willy nilly to the badge bar
-        item.isDestiny2() && item.energy && (<span className={clsx(energyTypeStyles[item.energy.energyType], styles.energyCapacity)}>
-        {item.energy.energyCapacity}</span>)
-        */}
-        {item.element &&
-          !(item.bucket.inWeapons && item.element.enumValue === DamageType.Kinetic) && (
-            <ElementIcon element={item.element} className={iconStyles.lightBackground} />
-          )}
-        <span>{badgeContent}</span>
-      </div>
+      {summaryIcon}
+      {item.element &&
+        !(item.bucket.inWeapons && item.element.enumValue === DamageType.Kinetic) && (
+          <ElementIcon
+            element={item.element}
+            className={clsx({ [styles.fixContrast]: fixContrast })}
+            d1Badge={item.destinyVersion === 1}
+          />
+        )}
+      <span className={styles.badgeContent}>{badgeContent}</span>
     </div>
   );
 }
 
-export function ghostBadgeContent(item: DimItem) {
-  const infos = getGhostInfos(item);
-
-  const planet = _.uniq(infos.map((i) => i.location).filter((l) => l !== true && l !== false))
-    // t('Ghost.crucible')  t('Ghost.dreaming')   t('Ghost.edz')      t('Ghost.gambit')
-    // t('Ghost.io')        t('Ghost.leviathan')  t('Ghost.mars')     t('Ghost.mercury')
-    // t('Ghost.nessus')    t('Ghost.strikes')    t('Ghost.tangled')  t('Ghost.titan')
-    // t('Ghost.moon')
-    .map((location) => t(`Ghost.${location}`))
-    .join(',');
-  const improved = infos.some((i) => i.type.improved) ? '+' : '';
-
-  return [planet, improved];
+/**
+ * ClassifiedNotes shows the notes field for classified items as a way to make
+ * them easier to ID. It's broken out into its own component so that the store
+ * subscription for notes only happens for classified items.
+ */
+function ClassifiedNotes({ item }: { item: DimItem }) {
+  const savedNotes = useSelector(notesSelector(item));
+  return <>{savedNotes ?? '???'}</>;
 }

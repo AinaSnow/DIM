@@ -1,28 +1,35 @@
-import React from 'react';
 import clsx from 'clsx';
 import { DimStore } from '../inventory/store-types';
 import CharacterTile from './CharacterTile';
-import './StoreHeading.scss';
+import * as styles from './CharacterTileButton.m.scss';
 
 /** Render a {CharacterTile} as a button */
 export default function CharacterTileButton({
   character,
   onClick,
+  children,
+  className,
+  ref,
 }: {
   character: DimStore;
-  onClick?(id: string): void;
+  onClick: (id: string) => void;
+  children?: React.ReactNode;
+  className?: string;
+  ref?: React.Ref<HTMLButtonElement>;
 }) {
-  const handleClick = () => onClick?.(character.id);
+  const handleClick = onClick ? () => onClick(character.id) : undefined;
+
+  // TODO: these should really be radio buttons (one exclusive choice among several) and be navigable with arrow keys.
 
   return (
-    <div
+    <button
+      type="button"
       onClick={handleClick}
-      className={clsx('character', {
-        current: character.current,
-        destiny2: character.isDestiny2(),
-      })}
+      className={clsx(styles.character, className)}
+      ref={ref}
     >
       <CharacterTile store={character} />
-    </div>
+      {children}
+    </button>
   );
 }

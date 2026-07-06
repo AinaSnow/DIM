@@ -1,75 +1,49 @@
-import React from 'react';
-import { DimItem } from 'app/inventory/item-types';
-import NotesArea from './NotesArea';
-import ExternalLink from 'app/dim-ui/ExternalLink';
-import { t } from 'app/i18next-t';
-import ishtarLogo from '../../images/ishtar-collective.svg';
-import styles from './ItemDescription.m.scss';
-import { connect } from 'react-redux';
-import { RootState } from 'app/store/types';
-import { inventoryWishListsSelector } from 'app/wishlists/reducer';
-import { InventoryWishListRoll } from 'app/wishlists/wishlists';
 import { ExpandableTextBlock } from 'app/dim-ui/ExpandableTextBlock';
+import RichDestinyText from 'app/dim-ui/destiny-symbols/RichDestinyText';
+import { t } from 'app/i18next-t';
+import { DimItem } from 'app/inventory/item-types';
+import { wishListSelector } from 'app/wishlists/selectors';
+import clsx from 'clsx';
+import { useSelector } from 'react-redux';
+import * as styles from './ItemDescription.m.scss';
+import NotesArea from './NotesArea';
 
-interface ProvidedProps {
-  item: DimItem;
-}
+export default function ItemDescription({ item }: { item: DimItem }) {
+  const wishlistItem = useSelector(wishListSelector(item));
 
-interface StoreProps {
-  inventoryWishListRoll?: InventoryWishListRoll;
-}
-
-function mapStateToProps(state: RootState, props: ProvidedProps): StoreProps {
-  return {
-    inventoryWishListRoll: inventoryWishListsSelector(state)[props.item.id],
-  };
-}
-
-type Props = ProvidedProps & StoreProps;
-
-function ItemDescription({ item, inventoryWishListRoll }: Props) {
-  const showDescription =
-    !item.bucket.inWeapons && !item.bucket.inArmor && Boolean(item.description?.length);
-
-  const loreLink = item.loreHash
-    ? `http://www.ishtar-collective.net/entries/${item.loreHash}`
-    : undefined;
+  // suppressing some unnecessary information for weapons and armor,
+  // to make room for all that other delicious info
+  const showFlavor = !item.bucket.inWeapons && !item.bucket.inArmor;
 
   return (
     <>
-      {showDescription && (
-        <div className={styles.officialDescription}>
-          {item.description}{' '}
-          {loreLink && (
-            <ExternalLink
-              className={styles.loreLink}
-              href={loreLink}
-              title={t('MovePopup.ReadLore')}
-              onClick={() => ga('send', 'event', 'Item Popup', 'Read Lore')}
-            >
-              <img src={ishtarLogo} height="16" width="16" />
-              {t('MovePopup.ReadLoreLink')}
-            </ExternalLink>
+      {showFlavor && (
+        <>
+          {Boolean(item.description?.length) && (
+            <div className={styles.description}>
+              <RichDestinyText
+                text={item.description}
+                ownerId={item.vendor?.characterId ?? item.owner}
+              />
+            </div>
           )}
-        </div>
+          {Boolean(item.displaySource?.length) && (
+            <div className={clsx(styles.description, styles.secondaryText)}>
+              <RichDestinyText
+                text={item.displaySource}
+                ownerId={item.vendor?.characterId ?? item.owner}
+              />
+            </div>
+          )}
+        </>
       )}
-      {item.isDestiny2() &&
-        !item.bucket.inWeapons &&
-        !item.bucket.inArmor &&
-        Boolean(item.displaySource?.length) && (
-          <div className={styles.officialDescription}>{item.displaySource}</div>
-        )}
-      {inventoryWishListRoll?.notes && inventoryWishListRoll.notes.length > 0 && (
+      {!$featureFlags.triage && wishlistItem && Boolean(wishlistItem?.notes?.length) && (
         <ExpandableTextBlock linesWhenClosed={3} className={styles.description}>
-          <span className={styles.wishListLabel}>
-            {t('WishListRoll.WishListNotes', { notes: '' })}
-          </span>
-          <span className={styles.wishListTextContent}>{inventoryWishListRoll.notes}</span>
+          <span className={styles.label}>{t('WishListRoll.WishListNotes')}</span>
+          <span className={styles.secondaryText}>{wishlistItem.notes}</span>
         </ExpandableTextBlock>
       )}
       <NotesArea item={item} className={styles.description} />
     </>
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(ItemDescription);

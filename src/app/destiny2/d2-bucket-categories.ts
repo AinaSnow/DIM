@@ -1,7 +1,32 @@
-export const D2Categories = {
-  Postmaster: ['Engrams', 'LostItems', 'Messages', 'SpecialOrders'],
-  Weapons: ['Class', 'Kinetic', 'Energy', 'Power', 'SeasonalArtifacts'],
-  Armor: ['Helmet', 'Gauntlets', 'Chest', 'Leg', 'ClassItem'],
-  General: ['Ghost', 'ClanBanners', 'Vehicle', 'Ships', 'Emblems', 'Finishers'],
-  Inventory: ['Consumables', 'Modifications', 'Shaders'],
+import type { D2BucketCategory } from 'app/inventory/inventory-buckets';
+import { BucketHashes } from 'data/d2/generated-enums';
+
+export const D2Categories: {
+  [key in D2BucketCategory]: BucketHashes[];
+} = {
+  Postmaster: [
+    BucketHashes.Engrams,
+    BucketHashes.LostItems,
+    BucketHashes.Messages,
+    BucketHashes.SpecialOrders,
+  ],
+  Weapons: [BucketHashes.KineticWeapons, BucketHashes.EnergyWeapons, BucketHashes.PowerWeapons],
+  Armor: [
+    BucketHashes.Helmet,
+    BucketHashes.Gauntlets,
+    BucketHashes.ChestArmor,
+    BucketHashes.LegArmor,
+    BucketHashes.ClassArmor,
+  ],
+  General: [
+    BucketHashes.Subclass,
+    BucketHashes.Ghost,
+    BucketHashes.Emblems,
+    BucketHashes.Ships,
+    BucketHashes.Vehicle,
+    BucketHashes.Emotes,
+    BucketHashes.Finishers,
+    BucketHashes.Artifacts,
+  ],
+  Inventory: [BucketHashes.Accessories, BucketHashes.Consumables, BucketHashes.Modifications],
 };

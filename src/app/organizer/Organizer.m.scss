@@ -1,6 +1,12 @@
+@use '../variables.scss' as *;
+
 .organizer {
-  > * {
-    margin: 8px;
+  width: min-content;
+
+  :global(.issue-banner-shown) & {
+    @include desktop {
+      padding-bottom: $issue-banner-height;
+    }
   }
 
   :global(#spreadsheets) {
@@ -37,4 +43,14 @@
       margin: 0 0 4px 0 !important;
     }
   }
+}
+
+.noMobile {
+  padding: 2em;
+  font-size: 18px;
+  text-align: center;
+  height: 70vh;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
 }

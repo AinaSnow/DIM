@@ -1,17 +1,14 @@
-import React from 'react';
-import clsx from 'clsx';
 import { t } from 'app/i18next-t';
-
-import { D1Store } from '../inventory/store-types';
-import PressTip from '../dim-ui/PressTip';
-import { percent } from '../shell/filters';
 import { D1ProgressionHashes } from 'app/search/d1-known-values';
-
-import styles from './CharacterHeaderXP.m.scss';
+import { percent } from 'app/shell/formatters';
+import clsx from 'clsx';
+import { PressTip } from '../dim-ui/PressTip';
+import { D1Store } from '../inventory/store-types';
+import * as styles from './CharacterHeaderXP.m.scss';
 
 function getLevelBar(store: D1Store) {
-  const prestige = store.progression?.progressions.find(
-    (p) => p.progressionHash === D1ProgressionHashes.Prestige
+  const prestige = store.progressions.find(
+    (p) => p.progressionHash === D1ProgressionHashes.Prestige,
   );
   let levelBar = store?.percentToNextLevel ?? 0;
   let xpTillMote: string | undefined = undefined;

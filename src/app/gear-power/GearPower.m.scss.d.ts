@@ -21,8 +21,11 @@ interface CssExports {
   'neutral': string;
   'positive': string;
   'power': string;
-  'primStat': string;
+  'powerLevel': string;
+  'powerToggleButton': string;
+  'sheetContents': string;
   'statMeta': string;
+  'toggle': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

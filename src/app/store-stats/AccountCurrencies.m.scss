@@ -1,4 +1,13 @@
-img.currency {
+.icon {
   height: 16px;
   width: 16px;
+}
+
+.text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.faded {
+  opacity: 0.7;
 }

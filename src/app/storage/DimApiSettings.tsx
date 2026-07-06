@@ -1,49 +1,37 @@
-import React, { useState } from 'react';
-import './storage.scss';
-import LocalStorageInfo from './LocalStorageInfo';
-import { t } from 'app/i18next-t';
-import ImportExport from './ImportExport';
-import { apiPermissionGrantedSelector } from 'app/dim-api/selectors';
-import { connect } from 'react-redux';
-import { RootState, ThunkDispatchProp, ThunkResult } from 'app/store/types';
-import { setApiPermissionGranted } from 'app/dim-api/basic-actions';
-import _ from 'lodash';
+import { ExportResponse } from '@destinyitemmanager/dim-api-types';
 import { deleteAllApiData, loadDimApiData } from 'app/dim-api/actions';
-import { AppIcon, deleteIcon } from 'app/shell/icons';
-import LegacyGoogleDriveSettings from './LegacyGoogleDriveSettings';
-import HelpLink from 'app/dim-ui/HelpLink';
+import { setApiPermissionGranted } from 'app/dim-api/basic-actions';
 import { exportDimApiData } from 'app/dim-api/dim-api';
-import { exportBackupData } from './export-data';
-import ErrorPanel from 'app/shell/ErrorPanel';
-import { Link } from 'react-router-dom';
-import { ExportResponse, DestinyVersion } from '@destinyitemmanager/dim-api-types';
-import { parseProfileKey } from 'app/dim-api/reducer';
 import { importDataBackup } from 'app/dim-api/import';
+import { apiPermissionGrantedSelector, dimSyncErrorSelector } from 'app/dim-api/selectors';
+import HelpLink from 'app/dim-ui/HelpLink';
+import useConfirm from 'app/dim-ui/useConfirm';
+import { t } from 'app/i18next-t';
+import { dimApiHelpLink } from 'app/login/Login';
 import { showNotification } from 'app/notifications/notifications';
-import { DimData } from './sync.service';
+import Checkbox from 'app/settings/Checkbox';
+import { fineprintClass, horizontalClass, settingClass } from 'app/settings/SettingsPage';
+import { Settings } from 'app/settings/initial-settings';
+import ErrorPanel from 'app/shell/ErrorPanel';
+import { AppIcon, deleteIcon, refreshIcon } from 'app/shell/icons';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { errorMessage } from 'app/utils/errors';
+import React, { useState } from 'react';
+import { useSelector } from 'react-redux';
+import { Link } from 'react-router';
+import * as styles from './DimApiSettings.m.scss';
+import ImportExport from './ImportExport';
+import LocalStorageInfo from './LocalStorageInfo';
+import { exportBackupData, exportLocalData } from './export-data';
 
-interface StoreProps {
-  apiPermissionGranted: boolean;
-  profileLoadedError?: Error;
-}
-
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    apiPermissionGranted: apiPermissionGrantedSelector(state),
-    profileLoadedError: state.dimApi.profileLoadedError,
-  };
-}
-
-type Props = StoreProps & ThunkDispatchProp;
-
-const dimApiHelpLink =
-  'https://github.com/DestinyItemManager/DIM/wiki/DIM-Sync-(new-storage-for-tags,-loadouts,-and-settings)';
-
-function DimApiSettings({ apiPermissionGranted, dispatch, profileLoadedError }: Props) {
+export default function DimApiSettings() {
+  const dispatch = useThunkDispatch();
+  const apiPermissionGranted = useSelector(apiPermissionGrantedSelector);
+  const profileLoadedError = useSelector(dimSyncErrorSelector);
   const [hasBackedUp, setHasBackedUp] = useState(false);
 
-  const onApiPermissionChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const granted = event.target.checked;
+  const onApiPermissionChange = async (checked: boolean) => {
+    const granted = checked;
     dispatch(setApiPermissionGranted(granted));
     if (granted) {
       const data = await dispatch(exportLocalData());
@@ -51,138 +39,102 @@ function DimApiSettings({ apiPermissionGranted, dispatch, profileLoadedError }: 
       exportBackupData(data);
       showBackupDownloadedNotification();
       dispatch(loadDimApiData());
+    } else {
+      // Reset the warning about data not being saved
+      localStorage.removeItem('warned-no-sync');
     }
   };
 
   const onExportData = async () => {
     setHasBackedUp(true);
+    let data: ExportResponse;
     if (apiPermissionGranted) {
       // Export from the server
-      const data = await exportDimApiData();
-      exportBackupData(data);
+      try {
+        data = await exportDimApiData();
+      } catch (e) {
+        showNotification({
+          type: 'error',
+          title: t('Storage.ExportError'),
+          body: t('Storage.ExportErrorBody', { error: errorMessage(e) }),
+          duration: 15000,
+        });
+        data = await dispatch(exportLocalData());
+      }
     } else {
       // Export from local data
-      const data = await dispatch(exportLocalData());
-      exportBackupData(data);
+      data = await dispatch(exportLocalData());
     }
+    exportBackupData(data);
   };
 
-  const onImportData = async (data: DimData | ExportResponse) => {
-    if (confirm(t('Storage.ImportConfirmDimApi'))) {
+  const [confirmDialog, confirm] = useConfirm();
+  const onImportData = async (data: ExportResponse) => {
+    if (await confirm(t('Storage.ImportConfirmDimApi'))) {
       await dispatch(importDataBackup(data));
     }
   };
 
-  const deleteAllData = (e: React.MouseEvent) => {
+  const deleteAllData = async (e: React.MouseEvent) => {
     e.preventDefault();
     if (apiPermissionGranted && !hasBackedUp) {
-      alert(t('Storage.BackUpFirst'));
-    } else if (confirm(t('Storage.DeleteAllDataConfirm'))) {
+      showNotification({ type: 'warning', title: t('Storage.BackUpFirst') });
+    } else if (await confirm(t('Storage.DeleteAllDataConfirm'))) {
       dispatch(deleteAllApiData());
     }
   };
 
+  const refreshDimSync = async () => {
+    await dispatch(loadDimApiData({ forceLoad: true }));
+  };
+
   return (
-    <section className="storage" id="storage">
+    <section className={styles.storage} id="storage">
+      {confirmDialog}
       <h2>{t('Storage.MenuTitle')}</h2>
 
-      <div className="setting">
-        <div className="horizontal">
-          <label htmlFor="apiPermissionGranted">
-            {t('Storage.EnableDimApi')} <HelpLink helpLink={dimApiHelpLink} />
-          </label>
-          <input
-            type="checkbox"
-            id="apiPermissionGranted"
-            name="apiPermissionGranted"
-            checked={apiPermissionGranted}
-            onChange={onApiPermissionChange}
-          />
-        </div>
-        <div className="fineprint">{t('Storage.DimApiFinePrint')}</div>
+      <div className={settingClass}>
+        <Checkbox
+          name={'apiPermissionGranted' as keyof Settings}
+          label={
+            <>
+              {t('Storage.EnableDimApi')} <HelpLink helpLink={dimApiHelpLink} />
+            </>
+          }
+          value={apiPermissionGranted}
+          onChange={onApiPermissionChange}
+        />
+        <div className={fineprintClass}>{t('Storage.DimApiFinePrint')}</div>
+        {apiPermissionGranted && (
+          <>
+            <button type="button" className="dim-button" onClick={refreshDimSync}>
+              <AppIcon icon={refreshIcon} /> {t('Storage.RefreshDimSync')}
+            </button>
+            <button type="button" className="dim-button" onClick={deleteAllData}>
+              <AppIcon icon={deleteIcon} /> {t('Storage.DeleteAllData')}
+            </button>
+          </>
+        )}
       </div>
       {profileLoadedError && (
         <ErrorPanel title={t('Storage.ProfileErrorTitle')} error={profileLoadedError} />
       )}
       {apiPermissionGranted && (
-        <div className="setting horizontal">
-          <label>{t('Storage.AuditLogLabel')}</label>
-          <Link to={(location) => `${location.pathname}/audit`} className="dim-button">
-            {t('Storage.AuditLog')}
-          </Link>
+        <div className={settingClass}>
+          <div className={horizontalClass}>
+            <label>{t('SearchHistory.Link')}</label>
+            <Link to="/search-history" className="dim-button">
+              {t('SearchHistory.Title')}
+            </Link>
+          </div>
         </div>
       )}
-      {apiPermissionGranted && (
-        <div className="setting horizontal">
-          <label>{t('Storage.DeleteAllDataLabel')}</label>
-          <button type="button" className="dim-button" onClick={deleteAllData}>
-            <AppIcon icon={deleteIcon} /> {t('Storage.DeleteAllData')}
-          </button>
-        </div>
-      )}
-      <LocalStorageInfo showDetails={!apiPermissionGranted} />
-      <ImportExport onExportData={onExportData} onImportData={onImportData} />
-      <LegacyGoogleDriveSettings onImportData={onImportData} />
+      <LocalStorageInfo showDetails={!apiPermissionGranted} className={settingClass} />
+      <div className={settingClass}>
+        <ImportExport onExportData={onExportData} onImportData={onImportData} />
+      </div>
     </section>
   );
-}
-
-export default connect<StoreProps>(mapStateToProps)(DimApiSettings);
-
-/**
- * Export the local IDB data to a format the DIM API could import.
- */
-function exportLocalData(): ThunkResult<ExportResponse> {
-  return async (_, getState) => {
-    const dimApiState = getState().dimApi;
-    const exportResponse: ExportResponse = {
-      settings: dimApiState.settings,
-      loadouts: [],
-      tags: [],
-      triumphs: [],
-      itemHashTags: [],
-      searches: [],
-    };
-
-    for (const profileKey in dimApiState.profiles) {
-      if (Object.prototype.hasOwnProperty.call(dimApiState.profiles, profileKey)) {
-        const [platformMembershipId, destinyVersion] = parseProfileKey(profileKey);
-
-        for (const loadout of Object.values(dimApiState.profiles[profileKey].loadouts)) {
-          exportResponse.loadouts.push({
-            loadout,
-            platformMembershipId,
-            destinyVersion,
-          });
-        }
-        for (const annotation of Object.values(dimApiState.profiles[profileKey].tags)) {
-          exportResponse.tags.push({
-            annotation,
-            platformMembershipId,
-            destinyVersion,
-          });
-        }
-
-        exportResponse.triumphs.push({
-          platformMembershipId,
-          triumphs: dimApiState.profiles[profileKey].triumphs,
-        });
-      }
-    }
-
-    exportResponse.itemHashTags = Object.values(dimApiState.itemHashTags);
-
-    for (const destinyVersion in dimApiState.searches) {
-      for (const search of dimApiState.searches[destinyVersion]) {
-        exportResponse.searches.push({
-          destinyVersion: parseInt(destinyVersion, 10) as DestinyVersion,
-          search,
-        });
-      }
-    }
-
-    return exportResponse;
-  };
 }
 
 // TODO: gotta change all these strings

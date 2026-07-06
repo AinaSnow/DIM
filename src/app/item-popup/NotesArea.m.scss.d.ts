@@ -3,10 +3,11 @@
 interface CssExports {
   'addNotesLabel': string;
   'editIcon': string;
+  'error': string;
   'minimal': string;
   'noNotesYet': string;
   'notesLabel': string;
   'openNotesEditor': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

@@ -1,92 +1,105 @@
-import React from 'react';
-import { DimError } from 'app/bungie-api/bungie-service-helper';
-import { AppIcon, twitterIcon, refreshIcon, helpIcon } from '../shell/icons';
+import { BungieError, HttpStatusError } from 'app/bungie-api/http-client';
 import ExternalLink from 'app/dim-ui/ExternalLink';
 import { t } from 'app/i18next-t';
-import styles from './ErrorPanel.m.scss';
+import { DimError } from 'app/utils/dim-error';
+import BungieAlerts from 'app/whats-new/BungieAlerts';
+import { PlatformErrorCodes } from 'bungie-api-ts/destiny2';
+import { AppIcon, helpIcon, mastodonIcon, refreshIcon } from '../shell/icons';
+import * as styles from './ErrorPanel.m.scss';
+import { bungieHelpAccount, bungieHelpLink, troubleshootingLink } from './links';
 
-const bungieHelpLink = 'http://twitter.com/BungieHelp';
-const dimHelpLink = 'http://twitter.com/ThisIsDIM';
-const troubleshootingLink = 'https://destinyitemmanager.fandom.com/wiki/Troubleshooting';
-const Timeline = React.lazy(async () => {
-  const m = await import(/* webpackChunkName: "twitter" */ 'react-twitter-widgets');
-  return { default: m.Timeline };
-});
-
-const twitters = (
-  <div className={styles.twitters}>
-    <React.Suspense fallback={null}>
-      <Timeline
-        dataSource={{
-          sourceType: 'profile',
-          screenName: 'BungieHelp',
-        }}
-        options={{
-          dnt: true,
-          via: 'BungieHelp',
-          username: 'BungieHelp',
-          height: '100%',
-        }}
-      />
-      <Timeline
-        dataSource={{
-          sourceType: 'profile',
-          screenName: 'ThisIsDIM',
-        }}
-        options={{
-          dnt: true,
-          via: 'ThisIsDIM',
-          username: 'ThisIsDIM',
-          height: '100%',
-        }}
-      />
-    </React.Suspense>
-  </div>
-);
+function Socials() {
+  return (
+    <div className={styles.socials}>
+      {['https://mastodon.social/users/bungiehelp'].map((account) => (
+        <div key={account} className={styles.timeline}>
+          <iframe
+            allowFullScreen
+            sandbox="allow-top-navigation allow-scripts allow-popups allow-popups-to-escape-sandbox"
+            src={`https://www.mastofeed.com/apiv2/feed?userurl=${encodeURIComponent(
+              account,
+            )}&theme=dark&size=100&header=false&replies=false&boosts=true`}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function ErrorPanel({
   title,
   error,
   fallbackMessage,
-  showTwitters,
-  children,
+  showSocials,
   showReload,
+  frameless,
 }: {
   title?: string;
-  error?: DimError;
+  error?: Error | DimError;
   fallbackMessage?: string;
-  showTwitters?: boolean;
+  showSocials?: boolean;
   showReload?: boolean;
-  children?: React.ReactNode;
+  /** Suitable for showing in a tooltip */
+  frameless?: boolean;
 }) {
-  const hasBungieErrorCode = error?.code && error.code > 0;
+  const underlyingError = error instanceof DimError ? error.cause : undefined;
+  showSocials = showSocials ? !(error instanceof DimError) || error.showSocials : false;
 
-  return (
-    <div>
-      <div className={styles.errorPanel}>
-        <h2>
-          {title || t('ErrorBoundary.Title')}
+  let code: string | number | undefined = error instanceof DimError ? error.code : undefined;
+  if (underlyingError) {
+    if (underlyingError instanceof BungieError) {
+      code = underlyingError.code;
+    } else if (underlyingError instanceof HttpStatusError) {
+      code = underlyingError.status;
+    }
+  }
 
-          {error && hasBungieErrorCode ? (
-            <span className={styles.errorCode}>Error {error.code}</span>
-          ) : (
-            error && <span className={styles.errorCode}>{error.name}</span>
-          )}
-        </h2>
-        <p>
-          {error ? error.message : fallbackMessage}{' '}
-          {hasBungieErrorCode && t('ErrorPanel.Description')}
-        </p>
-        {children}
-        <div className={styles.twitterLinks}>
-          {hasBungieErrorCode && (
+  let name = underlyingError?.name || error?.name;
+  let message = error?.message || fallbackMessage;
+
+  const ourFault = !(
+    underlyingError instanceof BungieError || underlyingError instanceof HttpStatusError
+  );
+
+  if (message?.includes('toSorted') || message?.includes('toReversed')) {
+    title = t('ErrorPanel.BrowserTooOldTitle');
+    name = 'BrowserTooOld';
+    message = `${t('ErrorPanel.BrowserTooOld')}\n${navigator.userAgent}`;
+  }
+
+  const content = (
+    <>
+      <h2>
+        {title || t('ErrorBoundary.Title')}
+
+        {error && (
+          <span className={styles.errorCode}>
+            {name}
+            {code !== undefined && ' '}
+            {code}
+          </span>
+        )}
+      </h2>
+      <p>
+        {message}
+        {underlyingError instanceof BungieError && (
+          <span>
+            {' '}
+            {underlyingError.code === PlatformErrorCodes.SystemDisabled
+              ? t('ErrorPanel.SystemDown')
+              : t('ErrorPanel.Description')}
+          </span>
+        )}
+      </p>
+      {frameless ? (
+        <p>{t('ErrorPanel.ReadTheGuide')}</p>
+      ) : (
+        <div className={styles.links}>
+          {!ourFault && (
             <ExternalLink href={bungieHelpLink} className="dim-button">
-              <AppIcon icon={twitterIcon} /> @BungieHelp
+              <AppIcon icon={mastodonIcon} /> {bungieHelpAccount}
             </ExternalLink>
           )}
-          <ExternalLink href={dimHelpLink} className="dim-button">
-            <AppIcon icon={twitterIcon} /> @ThisIsDim
-          </ExternalLink>
           <ExternalLink href={troubleshootingLink} className="dim-button">
             <AppIcon icon={helpIcon} /> {t('ErrorPanel.Troubleshooting')}
           </ExternalLink>
@@ -96,8 +109,19 @@ export default function ErrorPanel({
             </div>
           )}
         </div>
-      </div>
-      {showTwitters && twitters}
+      )}
+    </>
+  );
+
+  if (frameless) {
+    return content;
+  }
+
+  return (
+    <div>
+      <div className={styles.errorPanel}>{content}</div>
+      {showSocials && <BungieAlerts />}
+      {showSocials && <Socials />}
     </div>
   );
 }

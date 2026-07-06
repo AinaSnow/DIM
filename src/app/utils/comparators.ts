@@ -4,28 +4,29 @@ export type Comparator<T> = (a: T, b: T) => -1 | 0 | 1;
  * Generate a comparator from a mapping function.
  *
  * @example
- * // Returns a comparator that compares items by primary stat
- * compareBy((item) => item.primStat.value)
+ * // Returns a comparator that compares items by power
+ * compareBy((item) => item.power)
  */
-export function compareBy<T, V>(fn: (arg: T) => V): Comparator<T> {
-  return (a, b) => {
-    const aVal = fn(a);
-    const bVal = fn(b);
-    // Undefined is neither greater than or less than anything. This considers it less than everything.
-    return aVal === undefined
-      ? bVal === undefined
-        ? 0
-        : -1
-      : bVal === undefined
-      ? aVal === undefined
-        ? 0
-        : 1
-      : aVal < bVal
-      ? -1
-      : aVal > bVal
-      ? 1
-      : 0;
-  };
+export function compareBy<T>(fn: (arg: T) => number | string | undefined | boolean): Comparator<T> {
+  return (a, b) => primitiveComparator(fn(a), fn(b));
+}
+
+export function primitiveComparator(
+  aVal: string | number | boolean | undefined,
+  bVal: string | number | boolean | undefined,
+) {
+  // Undefined is neither greater than or less than anything.
+  // This considers it less than everything (except another undefined).
+
+  return aVal === bVal
+    ? 0 // neither goes first
+    : bVal === undefined
+      ? 1 // b goes first
+      : aVal === undefined || aVal < bVal
+        ? -1 // a goes first
+        : aVal > bVal
+          ? 1 // b goes first
+          : 0; // a fallback that would catch only invalid inputs
 }
 
 /**
@@ -48,4 +49,11 @@ export function chainComparator<T>(...compares: Comparator<T>[]): Comparator<T> 
     }
     return 0;
   };
+}
+
+export function compareByIndex<T, V>(list: V[], fn: (arg: T) => V): Comparator<T> {
+  return compareBy((arg) => {
+    const ix = list.indexOf(fn(arg));
+    return ix === -1 ? Number.MAX_SAFE_INTEGER : ix;
+  });
 }

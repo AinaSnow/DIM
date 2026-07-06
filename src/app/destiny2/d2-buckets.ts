@@ -1,113 +1,74 @@
-import { BucketCategory, DestinyInventoryBucketDefinition } from 'bungie-api-ts/destiny2';
-import _ from 'lodash';
-import { D2ManifestDefinitions } from './d2-definitions';
-import { InventoryBuckets, InventoryBucket } from '../inventory/inventory-buckets';
-import { VENDORS } from 'app/search/d2-known-values';
+import { VendorHashes } from 'app/search/d2-known-values';
+import { filterMap } from 'app/utils/collections';
+import { BucketCategory } from 'bungie-api-ts/destiny2';
+import type {
+  D2BucketCategory,
+  InventoryBucket,
+  InventoryBuckets,
+} from '../inventory/inventory-buckets';
 import { D2Categories } from './d2-bucket-categories';
+import { D2ManifestDefinitions } from './d2-definitions';
 
-// A mapping from the bucket hash to DIM item types
-const bucketToType: { [hash: number]: string | undefined } = {
-  2465295065: 'Energy',
-  2689798304: 'UpgradePoint',
-  2689798305: 'StrangeCoin',
-  2689798308: 'Glimmer',
-  2689798309: 'Legendary Shards',
-  2689798310: 'Silver',
-  2689798311: 'Bright Dust',
-  2973005342: 'Shaders',
-  3161908920: 'Messages',
-  3284755031: 'Class',
-  3313201758: 'Modifications',
-  3448274439: 'Helmet',
-  3551918588: 'Gauntlets',
-  3865314626: 'Materials',
-  4023194814: 'Ghost',
-  4274335291: 'Emblems',
-  4292445962: 'ClanBanners',
-  14239492: 'Chest',
-  20886954: 'Leg',
-  215593132: 'LostItems',
-  284967655: 'Ships',
-  375726501: 'Engrams',
-  953998645: 'Power',
-  1269569095: 'Auras',
-  1367666825: 'SpecialOrders',
-  1498876634: 'Kinetic',
-  1585787867: 'ClassItem',
-  2025709351: 'Vehicle',
-  1469714392: 'Consumables',
-  138197802: 'General',
-  1107761855: 'Emotes',
-  1345459588: 'Pursuits',
-  1506418338: 'SeasonalArtifacts',
-  3683254069: 'Finishers',
-};
-
-const typeToSort: { [type: string]: string } = {};
-_.forIn(D2Categories, (types, category) => {
-  types.forEach((type) => {
-    typeToSort[type] = category;
-  });
-});
+const bucketHashToSort: { [bucketHash: number]: D2BucketCategory } = {};
+for (const [category, bucketHashes] of Object.entries(D2Categories)) {
+  for (const bucketHash of bucketHashes) {
+    bucketHashToSort[bucketHash] = category as D2BucketCategory;
+  }
+}
 
 export function getBuckets(defs: D2ManifestDefinitions) {
   const buckets: InventoryBuckets = {
     byHash: {},
-    byType: {},
     byCategory: {},
     unknown: {
       description: 'Unknown items. DIM needs a manifest update.',
       name: 'Unknown',
       hash: -1,
+      // default to false. an equipped item existing, will override this in inv display
+      equippable: false,
       hasTransferDestination: false,
       capacity: Number.MAX_SAFE_INTEGER,
       sort: 'Unknown',
-      type: 'Unknown',
       accountWide: false,
       category: BucketCategory.Item,
     },
     setHasUnknown() {
-      this.byCategory[this.unknown.sort] = [this.unknown];
-      this.byType[this.unknown.type] = this.unknown;
+      this.byCategory[this.unknown.sort!] = [this.unknown];
     },
   };
-  _.forIn(defs.InventoryBucket, (def: DestinyInventoryBucketDefinition) => {
-    const type = bucketToType[def.hash];
-    let sort: string | undefined;
-    if (type) {
-      sort = typeToSort[type];
-    }
+  for (const def of Object.values(defs.InventoryBucket.getAll())) {
+    const sort = bucketHashToSort[def.hash];
     const bucket: InventoryBucket = {
       description: def.displayProperties.description,
       name: def.displayProperties.name,
       hash: def.hash,
+      equippable: def.category === BucketCategory.Equippable,
       hasTransferDestination: def.hasTransferDestination,
       capacity: def.itemCount,
       accountWide: def.scope === 1,
       category: def.category,
-      type,
       sort,
     };
-    if (bucket.type) {
-      buckets.byType[bucket.type] = bucket;
-    }
     // Add an easy helper property like "inPostmaster"
     if (bucket.sort) {
       bucket[`in${bucket.sort}`] = true;
     }
     buckets.byHash[bucket.hash] = bucket;
-  });
-  const vaultMappings = {};
-  defs.Vendor.get(VENDORS.VAULT).acceptedItems.forEach((items) => {
+  }
+  const vaultMappings: { [bucketHash: number]: number } = {};
+  for (const items of defs.Vendor.get(VendorHashes.Vault).acceptedItems) {
     vaultMappings[items.acceptedInventoryBucketHash] = items.destinationInventoryBucketHash;
-  });
-  _.forIn(buckets.byHash, (bucket: InventoryBucket) => {
+  }
+  for (const bucket of Object.values(buckets.byHash)) {
     if (vaultMappings[bucket.hash]) {
       bucket.vaultBucket = buckets.byHash[vaultMappings[bucket.hash]];
     }
-  });
-  _.forIn(D2Categories, (types, category) => {
-    buckets.byCategory[category] = _.compact(types.map((type) => buckets.byType[type]));
-  });
+  }
+  for (const [category, bucketHashes] of Object.entries(D2Categories)) {
+    buckets.byCategory[category] = filterMap(
+      bucketHashes,
+      (bucketHash) => buckets.byHash[bucketHash],
+    );
+  }
   return buckets;
 }

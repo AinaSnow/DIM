@@ -1,28 +1,37 @@
 {
   "compilerOptions": {
+    "strict": true,
     "esModuleInterop": true,
     "outDir": "./dist/",
     "sourceMap": true,
-    "strictNullChecks": true,
-    "strictBindCallApply": true,
     "module": "ESNext",
     "target": "ESNext",
     "jsx": "preserve",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
     "allowJs": true,
+    "rootDir": "./src",
+    "types": [
+      "node",
+      "jest",
+      "dom-chromium-installation-events",
+      "dom-screen-wake-lock",
+      "webpack-env"
+    ],
     "paths": {
-      "app/*": ["src/app/*"],
-      "data/*": ["src/data/*"],
-      "images/*": ["src/images/*"],
-      "destiny-icons/*": ["destiny-icons/*"],
-      "*.css": ["config/css-stub.js"]
+      "app/*": ["./src/app/*"],
+      "data/*": ["./src/data/*"],
+      "images/*": ["./src/images/*"],
+      "destiny-icons/*": ["./destiny-icons/*"],
+      "locale/*": ["./src/locale/*"],
+      "testing/*": ["./src/testing/*"],
+      "docs/*": ["./docs/*"],
+      "*": ["./*"]
     }
   },
-  "include": ["./src/**/*"]
+  "include": ["./src/**/*", "config/feature-flags.ts"]
 }

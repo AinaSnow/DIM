@@ -1,66 +1,61 @@
-import React from 'react';
-import './Account.scss';
-import { DestinyAccount } from './destiny-account';
-import { AppIcon, signOutIcon } from '../shell/icons';
-import { currentAccountSelector } from './selectors';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
-import { Link } from 'react-router-dom';
-import { connect } from 'react-redux';
-import Account from './Account';
 import { t } from 'app/i18next-t';
-import _ from 'lodash';
-import { logOut } from './platforms';
 import { accountRoute } from 'app/routes';
-import styles from './MenuAccounts.m.scss';
-import clsx from 'clsx';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { chainComparator, compareBy, reverseComparator } from 'app/utils/comparators';
+import React from 'react';
+import { useSelector } from 'react-redux';
+import { Link, useNavigate } from 'react-router';
+import { AppIcon, signOutIcon } from '../shell/icons';
+import Account from './Account';
+import * as styles from './MenuAccounts.m.scss';
+import { logOut } from './platforms';
+import { accountsSelector, currentAccountSelector } from './selectors';
 
-interface ProvidedProps {
-  closeDropdown(e: React.MouseEvent<HTMLDivElement>): void;
-}
+/**
+ * The accounts list in the sidebar menu.
+ */
+export default function MenuAccounts({
+  closeDropdown,
+}: {
+  closeDropdown: (e: React.MouseEvent<HTMLElement>) => void;
+}) {
+  const dispatch = useThunkDispatch();
+  const currentAccount = useSelector(currentAccountSelector);
+  const accounts = useSelector(accountsSelector);
+  const navigate = useNavigate();
 
-interface StoreProps {
-  currentAccount?: DestinyAccount;
-  accounts: readonly DestinyAccount[];
-}
-
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    currentAccount: currentAccountSelector(state),
-    accounts: state.accounts.accounts,
+  const onLogOut = async () => {
+    await dispatch(logOut());
+    await navigate('/login');
   };
-}
 
-type Props = ProvidedProps & StoreProps & ThunkDispatchProp;
-
-function MenuAccounts({ currentAccount, closeDropdown, accounts, dispatch }: Props) {
-  if (!currentAccount) {
-    return null;
-  }
-
-  const sortedAccounts = _.sortBy(accounts, (a) => -(a.lastPlayed?.getTime() || 0));
+  const sortedAccounts = accounts.toSorted(
+    chainComparator(
+      reverseComparator(compareBy((a) => a.destinyVersion)), // 2 before 1
+      reverseComparator(compareBy((a) => a.lastPlayed.getTime())),
+    ),
+  );
+  const bungieName = sortedAccounts[0]?.displayName;
 
   return (
     <div className={styles.accountSelect}>
-      <h3>Accounts</h3>
+      <h3>
+        {t('Accounts.Title')} <span className={styles.accountName}>{bungieName}</span>
+      </h3>
       {sortedAccounts.map((account) => (
         <Link
           key={`${account.membershipId}-${account.destinyVersion}`}
           to={`${accountRoute(account)}/inventory`}
+          onClick={closeDropdown}
         >
-          <Account
-            className={account === currentAccount ? 'selected-account' : ''}
-            account={account}
-            onClick={closeDropdown}
-          />
+          <Account account={account} selected={account === currentAccount} />
         </Link>
       ))}
-      <div className={clsx('account', styles.logout)} onClick={() => dispatch(logOut())}>
+      <button type="button" className={styles.logout} onClick={onLogOut}>
         <AppIcon icon={signOutIcon} />
         &nbsp;
         {t('Settings.LogOut')}
-      </div>
+      </button>
     </div>
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(MenuAccounts);

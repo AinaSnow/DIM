@@ -1,9 +1,11 @@
-import React from 'react';
-import _ from 'lodash';
+import { ownedItemsSelector } from 'app/inventory/selectors';
+import { isEmpty } from 'app/utils/collections';
+import { compareBy } from 'app/utils/comparators';
+import { useSelector } from 'react-redux';
 import BungieImage from '../../dim-ui/BungieImage';
-import { Vendor, VendorCost } from './vendor.service';
+import * as styles from '../../vendors/VendorItems.m.scss';
 import D1VendorItem from './D1VendorItem';
-import styles from '../../vendors/VendorItems.m.scss';
+import { Vendor, VendorCost } from './vendor.service';
 
 /**
  * Display the items for a single vendor, organized by category.
@@ -11,44 +13,47 @@ import styles from '../../vendors/VendorItems.m.scss';
 export default function D1VendorItems({
   vendor,
   totalCoins,
-  ownedItemHashes,
 }: {
   vendor: Vendor;
   totalCoins: {
     [currencyHash: number]: number;
   };
-  ownedItemHashes: Set<number>;
 }) {
   const allCurrencies: { [hash: number]: VendorCost['currency'] } = {};
+  const ownedItemHashes = useSelector(ownedItemsSelector);
 
-  vendor.allItems.forEach((saleItem) => {
-    saleItem.costs.forEach((cost) => {
+  for (const saleItem of vendor.allItems) {
+    for (const cost of saleItem.costs) {
       allCurrencies[cost.currency.itemHash] = cost.currency;
-    });
-  });
+    }
+  }
 
   return (
     <div className={styles.vendorContents}>
-      {!_.isEmpty(allCurrencies) && (
+      {!isEmpty(allCurrencies) && (
         <div className={styles.currencies}>
           {Object.values(allCurrencies).map((currency) => (
-            <div className={styles.currency} key={currency.itemHash}>
+            <div key={currency.itemHash}>
               {totalCoins?.[currency.itemHash] || 0}{' '}
-              <BungieImage src={currency.icon} title={currency.itemName} />
+              <BungieImage
+                src={currency.icon}
+                className={styles.currencyIcon}
+                title={currency.itemName}
+              />
             </div>
           ))}
         </div>
       )}
       <div className={styles.itemCategories}>
-        {_.map(vendor.categories, (category) => (
-          <div className={styles.vendorRow} key={category.index}>
+        {vendor.categories.map((category) => (
+          <div key={category.index}>
             <h3 className={styles.categoryTitle}>{category.title || 'Unknown'}</h3>
             <div className={styles.vendorItems}>
-              {_.sortBy(category.saleItems, (i) => i.item.name).map((item) => (
+              {category.saleItems.toSorted(compareBy((i) => i.item.name)).map((item) => (
                 <D1VendorItem
                   key={item.index}
                   saleItem={item}
-                  owned={ownedItemHashes.has(item.item.hash)}
+                  owned={ownedItemHashes.accountWideOwned.has(item.item.hash)}
                   totalCoins={totalCoins}
                 />
               ))}

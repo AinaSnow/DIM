@@ -1,16 +1,19 @@
-import { WishListRoll, DimWishList, WishListAndInfo } from './types';
 import { emptySet } from 'app/utils/empty';
+import { timer, warnLog } from 'app/utils/log';
+import { DimWishList, WishListAndInfo, WishListInfo, WishListRoll } from './types';
+
+const TAG = 'wishlist';
 
 /**
  * The title should follow the following format:
  * title:This Is My Source File Title.
  */
-const titleLabel = 'title:';
+const titleLabel = /^@?title:(.+)$/;
 /**
  * The description should follow the following format:
  * description:This Is My Source File Description And Maybe It Is Longer.
  */
-const descriptionLabel = 'description:';
+const descriptionLabel = /^@?description:(.+)$/;
 /**
  * Notes apply to all rolls until an empty line or comment.
  */
@@ -18,58 +21,80 @@ const notesLabel = '//notes:';
 
 /**
  * Extracts rolls, title, and description from the meat of
- * a wish list text file.
+ * one or more wish list text files, deduplicating within
+ * and between lists.
  */
-export function toWishList(fileText: string): WishListAndInfo {
+export function toWishList(files: [url: string | undefined, contents: string][]): WishListAndInfo {
+  const stopTimer = timer(TAG, 'Parse wish list');
   try {
     const wishList: WishListAndInfo = {
       wishListRolls: [],
-      title: undefined,
-      description: undefined,
+      infos: [],
     };
 
-    console.time('Parse wish list');
-    let blockNotes: string | undefined = undefined;
     const seen = new Set<string>();
-    let dups = 0;
 
-    const lines = fileText.split('\n');
-    for (const line of lines) {
-      if (line.startsWith(notesLabel)) {
-        blockNotes = parseBlockNoteLine(line);
-      } else if (line.length == 0 || line.startsWith('//')) {
-        // Empty lines and comments reset the block note
-        blockNotes = undefined;
-      } else if (!wishList.title && line.startsWith(titleLabel)) {
-        wishList.title = line.slice(titleLabel.length);
-      } else if (!wishList.description && line.startsWith(descriptionLabel)) {
-        wishList.description = line.slice(descriptionLabel.length);
-      } else {
-        const roll =
-          toDimWishListRoll(line, blockNotes) ||
-          toBansheeWishListRoll(line, blockNotes) ||
-          toDtrWishListRoll(line, blockNotes);
+    for (const [url, fileText] of files) {
+      const info: WishListInfo = {
+        url,
+        title: undefined,
+        description: undefined,
+        numRolls: 0,
+        dupeRolls: 0,
+      };
+      let blockNotes: string | undefined = undefined;
+      let title: string | undefined = undefined;
+      let description: string | undefined = undefined;
+      let match: RegExpExecArray | null = null;
+      const lines = fileText.split('\n');
+      for (const line of lines) {
+        if (line.startsWith(notesLabel)) {
+          blockNotes = parseBlockNoteLine(line);
+        } else if (line.length === 0 || line.startsWith('//')) {
+          // Empty lines and comments reset the block note
+          blockNotes = undefined;
+        } else if ((match = titleLabel.exec(line))) {
+          title = match[1];
+          if (!info.title) {
+            info.title = title.trim();
+          }
+        } else if ((match = descriptionLabel.exec(line))) {
+          description = match[1].trim();
+          if (!info.description) {
+            info.description = description;
+          }
+        } else {
+          const roll =
+            toDimWishListRoll(line, blockNotes) ||
+            toBansheeWishListRoll(line, blockNotes) ||
+            toDtrWishListRoll(line, blockNotes);
 
-        if (roll) {
-          const rollHash = `${roll.itemHash};${roll.isExpertMode};${sortedSetToString(
-            roll.recommendedPerks
-          )}`;
-          if (!seen.has(rollHash)) {
-            seen.add(rollHash);
-            wishList.wishListRolls.push(roll);
-          } else {
-            dups++;
+          if (roll) {
+            const rollHash = `${roll.itemHash};${roll.isExpertMode};${sortedSetToString(
+              roll.recommendedPerks,
+            )}`;
+
+            if (!seen.has(rollHash)) {
+              seen.add(rollHash);
+              wishList.wishListRolls.push(roll);
+              info.numRolls++;
+            } else {
+              info.dupeRolls++;
+            }
+            roll.sourceWishListIndex = wishList.infos.length;
+            roll.title = title;
+            roll.description = description;
           }
         }
       }
-    }
-
-    if (dups > 0) {
-      console.warn('Discarded', dups, 'duplicate rolls from wish list');
+      if (info.dupeRolls > 0) {
+        warnLog(TAG, 'Discarded', info.dupeRolls, 'duplicate rolls from wish list', url);
+      }
+      wishList.infos.push(info);
     }
     return wishList;
   } finally {
-    console.timeEnd('Parse wish list');
+    stopTimer();
   }
 }
 
@@ -86,7 +111,7 @@ function parseBlockNoteLine(blockNoteLine: string): string | undefined {
 }
 
 function getPerks(matchResults: RegExpMatchArray): Set<number> {
-  if (!matchResults.groups || matchResults.groups.itemPerks === undefined) {
+  if (matchResults.groups?.itemPerks === undefined) {
     return emptySet<number>();
   }
 
@@ -104,9 +129,11 @@ function getPerks(matchResults: RegExpMatchArray): Set<number> {
 }
 
 function getNotes(matchResults: RegExpMatchArray, blockNotes?: string): string | undefined {
-  return matchResults.groups?.wishListNotes && matchResults.groups.wishListNotes.length > 1
-    ? matchResults.groups.wishListNotes
-    : blockNotes;
+  const notes =
+    matchResults.groups?.wishListNotes && matchResults.groups.wishListNotes.length > 1
+      ? matchResults.groups.wishListNotes
+      : blockNotes;
+  return notes?.replace(/\\n/g, '\n');
 }
 
 function getItemHash(matchResults: RegExpMatchArray): number {
@@ -117,7 +144,8 @@ function getItemHash(matchResults: RegExpMatchArray): number {
   return Number(matchResults.groups.itemHash);
 }
 
-const dtrTextLineRegex = /^https:\/\/destinytracker\.com\/destiny-2\/db\/items\/(?<itemHash>\d+)(?:.*)?perks=(?<itemPerks>[\d,]*)(?:#notes:)?(?<wishListNotes>[^|]*)?/;
+const dtrTextLineRegex =
+  /^https:\/\/destinytracker\.com\/destiny-2\/db\/items\/(?<itemHash>\d+)\D*perks=(?<itemPerks>[\d,]*)(?:#notes:)?(?<wishListNotes>[^|]*)/;
 function toDtrWishListRoll(dtrTextLine: string, blockNotes?: string): WishListRoll | null {
   const matchResults = dtrTextLineRegex.exec(dtrTextLine);
 
@@ -137,7 +165,8 @@ function toDtrWishListRoll(dtrTextLine: string, blockNotes?: string): WishListRo
   };
 }
 
-const bansheeTextLineRegex = /^https:\/\/banshee-44\.com\/\?weapon=(?<itemHash>\d.+)&socketEntries=(?<itemPerks>[\d,]*)(?:#notes:)?(?<wishListNotes>[^|]*)?/;
+const bansheeTextLineRegex =
+  /^https:\/\/banshee-44\.com\/\?weapon=(?<itemHash>\d.+)&socketEntries=(?<itemPerks>[\d,]*)(?:#notes:)?(?<wishListNotes>[^|]*)/;
 
 /** Translate a single banshee-44.com URL -> WishListRoll. */
 function toBansheeWishListRoll(bansheeTextLine: string, blockNotes?: string): WishListRoll | null {
@@ -159,7 +188,8 @@ function toBansheeWishListRoll(bansheeTextLine: string, blockNotes?: string): Wi
   };
 }
 
-const textLineRegex = /^dimwishlist:item=(?<itemHash>-?\d+)(?:&perks=)?(?<itemPerks>[\d|,]*)?(?:#notes:)?(?<wishListNotes>[^|]*)?/;
+const textLineRegex =
+  /^dimwishlist:item=(?<itemHash>-?\d+)(?:&perks=)?(?<itemPerks>[\d|,]*)(?:#notes:)?(?<wishListNotes>[^|]*)/;
 function toDimWishListRoll(textLine: string, blockNotes?: string): WishListRoll | null {
   const matchResults = textLineRegex.exec(textLine);
 

@@ -1,19 +1,24 @@
-import React, { useState, useEffect } from 'react';
 import { t } from 'app/i18next-t';
-import './storage.scss';
+import { percent } from 'app/shell/formatters';
 import clsx from 'clsx';
-import _ from 'lodash';
-import { percent } from '../shell/filters';
+import { useEffect, useState } from 'react';
+import * as styles from './LocalStorageInfo.m.scss';
 
-export default function LocalStorageInfo({ showDetails }: { showDetails: boolean }) {
+export default function LocalStorageInfo({
+  showDetails,
+  className,
+}: {
+  showDetails: boolean;
+  className?: string;
+}) {
   const [browserMayClearData, setBrowserMayClearData] = useState(true);
   const [quota, setQuota] = useState<{ quota: number; usage: number }>();
 
   useEffect(() => {
     if ('storage' in navigator && 'estimate' in navigator.storage) {
-      navigator.storage.estimate().then((quota: { quota: number; usage: number }) => {
-        if (quota.usage >= 0 && quota.quota >= 0) {
-          setQuota(quota);
+      navigator.storage.estimate().then(({ usage, quota }) => {
+        if (usage && usage >= 0 && quota && quota >= 0) {
+          setQuota({ usage, quota });
         }
       });
     }
@@ -30,22 +35,22 @@ export default function LocalStorageInfo({ showDetails }: { showDetails: boolean
   }
 
   return (
-    <div className="storage-adapter">
+    <div className={className}>
       {showDetails && (
         <>
           <h3>{t('Storage.IndexedDBStorage')}</h3>
           <p>{t(`Storage.Details.IndexedDBStorage`)}</p>
           {browserMayClearData && (
-            <p className="warning-block">{t('Storage.BrowserMayClearData')}</p>
+            <p className={styles.warningBlock}>{t('Storage.BrowserMayClearData')}</p>
           )}
         </>
       )}
       {quota && (
         <div>
-          <div className="storage-guage">
+          <div className={styles.gauge}>
             <div
               className={clsx({
-                full: quota.usage / quota.quota > 0.9,
+                [styles.full]: quota.usage / quota.quota > 0.9,
               })}
               style={{ width: percent(Math.max(quota.usage / quota.quota, 0.01)) }}
             />

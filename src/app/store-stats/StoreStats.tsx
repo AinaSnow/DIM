@@ -1,47 +1,33 @@
-import React from 'react';
-import { useSelector } from 'react-redux';
-import clsx from 'clsx';
-import type { DimStore, DimVault } from 'app/inventory/store-types';
-import CharacterStats from '../store-stats/CharacterStats';
+import type { DimStore } from 'app/inventory/store-types';
+import { useCurrentSetBonus } from 'app/inventory/store/hooks';
+import { SetBonusesStatus } from 'app/item-popup/SetBonus';
+import { useIsPhonePortrait } from 'app/shell/selectors';
+import { PowerFormula, StoreCharacterStats } from '../store-stats/CharacterStats';
 import AccountCurrencies from './AccountCurrencies';
+import { D1StoreCharacterStats } from './D1CharacterStats';
+import * as styles from './StoreStats.m.scss';
 import VaultCapacity from './VaultCapacity';
-import styles from './StoreStats.m.scss';
-import { isPhonePortraitSelector } from 'app/inventory/selectors';
-
-function isVault(store: DimStore): store is DimVault {
-  return store.isVault;
-}
-
-function shouldShowCapacity(isPhonePortrait: boolean) {
-  if (!isPhonePortrait) {
-    return true;
-  }
-  return !$featureFlags.unstickyStats;
-}
 
 /** Render the store stats for any store type (character or vault) */
-export default function StoreStats({
-  store,
-  style,
-}: {
-  store: DimStore;
-  style?: React.CSSProperties;
-}) {
-  const isPhonePortrait = useSelector(isPhonePortraitSelector);
-  return (
-    <div className={clsx({ ['store-cell']: Boolean(style), vault: store.isVault })} style={style}>
-      {isVault(store) ? (
-        <div className={styles.vaultStats}>
-          <AccountCurrencies store={store} />
-          {shouldShowCapacity(isPhonePortrait) && <VaultCapacity store={store} />}
+export default function StoreStats({ store }: { store: DimStore }) {
+  const isPhonePortrait = useIsPhonePortrait();
+  const setBonusStatus = useCurrentSetBonus(store.id);
+  return store.isVault ? (
+    <div className={styles.vaultStats}>
+      <AccountCurrencies />
+      {!isPhonePortrait && <VaultCapacity />}
+    </div>
+  ) : store.destinyVersion === 1 ? (
+    <D1StoreCharacterStats store={store} />
+  ) : (
+    <div className={styles.characterStats}>
+      <div className={styles.topRow}>
+        <PowerFormula storeId={store.id} />
+        <div className={styles.setBonuses}>
+          <SetBonusesStatus setBonusStatus={setBonusStatus} store={store} />
         </div>
-      ) : (
-        <CharacterStats
-          destinyVersion={store.destinyVersion}
-          stats={store.stats}
-          storeId={store.id}
-        />
-      )}
+      </div>
+      <StoreCharacterStats store={store} />
     </div>
   );
 }

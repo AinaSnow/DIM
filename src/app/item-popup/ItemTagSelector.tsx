@@ -1,47 +1,69 @@
-import React from 'react';
-import { itemTagSelectorList, TagValue, getTag } from '../inventory/dim-item-info';
-import { connect } from 'react-redux';
+import KeyHelp from 'app/dim-ui/KeyHelp';
+import Select, { Option } from 'app/dim-ui/Select';
+import { t, tl } from 'app/i18next-t';
+import { setTag } from 'app/inventory/actions';
+import { tagSelector } from 'app/inventory/selectors';
+import { AppIcon, clearIcon } from 'app/shell/icons';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { compareBy } from 'app/utils/comparators';
+import clsx from 'clsx';
+import { useSelector } from 'react-redux';
+import { TagInfo, TagValue, itemTagSelectorList } from '../inventory/dim-item-info';
 import { DimItem } from '../inventory/item-types';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
-import { t } from 'app/i18next-t';
-import './ItemTagSelector.scss';
-import { setItemTag, setItemHashTag } from 'app/inventory/actions';
-import { itemInfosSelector, itemHashTagsSelector } from 'app/inventory/selectors';
-import { itemIsInstanced } from 'app/utils/item-utils';
+import * as styles from './ItemTagSelector.m.scss';
 
-interface ProvidedProps {
+interface Props {
   item: DimItem;
+  className?: string;
+  hideKeys?: boolean;
+  hideButtonLabel?: boolean;
 }
 
-interface StoreProps {
-  tag?: TagValue;
-}
+export default function ItemTagSelector({ item, className, hideKeys, hideButtonLabel }: Props) {
+  const dispatch = useThunkDispatch();
+  const tag = useSelector(tagSelector(item));
 
-function mapStateToProps(state: RootState, props: ProvidedProps): StoreProps {
-  return { tag: getTag(props.item, itemInfosSelector(state), itemHashTagsSelector(state)) };
-}
+  const onChange = (tag?: TagValue) => dispatch(setTag(item, tag));
 
-type Props = ProvidedProps & StoreProps & ThunkDispatchProp;
-
-function ItemTagSelector({ item, tag, dispatch }: Props) {
-  const onTagUpdated = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const tag = e.currentTarget.value as TagValue;
-    dispatch(
-      itemIsInstanced(item)
-        ? setItemTag({ itemId: item.id, tag: tag === 'clear' ? undefined : tag })
-        : setItemHashTag({ itemHash: item.hash, tag: tag === 'clear' ? undefined : tag })
-    );
-  };
+  const dropdownOptions: Option<TagValue>[] = itemTagSelectorList
+    .map((t) =>
+      tag && !t.type
+        ? {
+            label: tl('Tags.ClearTag'),
+            icon: clearIcon,
+            hotkey: 'shift+0',
+            sortOrder: -1,
+          }
+        : t,
+    )
+    .sort(compareBy((t) => t.sortOrder))
+    .map((tagOption) => ({
+      key: tagOption.type || 'none',
+      content: <TagOption tagOption={tagOption} hideKeys={hideKeys} />,
+      value: tagOption.type,
+    }));
 
   return (
-    <select className="item-tag-selector" onChange={onTagUpdated} value={tag || 'none'}>
-      {itemTagSelectorList.map((tagOption) => (
-        <option key={tagOption.type || 'clear'} value={tagOption.type || 'clear'}>
-          {t(tagOption.label)}
-        </option>
-      ))}
-    </select>
+    <Select<TagValue>
+      options={dropdownOptions}
+      value={tag}
+      onChange={onChange}
+      hideSelected={true}
+      className={clsx(className, styles.itemTagSelector, 'item-tag-selector', {
+        [styles.minimized]: hideButtonLabel,
+      })}
+    />
   );
 }
 
-export default connect<StoreProps>(mapStateToProps)(ItemTagSelector);
+function TagOption({ tagOption, hideKeys }: { tagOption: TagInfo; hideKeys?: boolean }) {
+  return (
+    <div className={styles.item}>
+      {tagOption.icon ? <AppIcon icon={tagOption.icon} /> : <div className={styles.null} />}
+      <span>{t(tagOption.label)}</span>
+      {!hideKeys && tagOption.hotkey && (
+        <KeyHelp combo={tagOption.hotkey} className={styles.keyHelp} />
+      )}
+    </div>
+  );
+}

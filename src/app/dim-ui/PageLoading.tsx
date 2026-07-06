@@ -1,51 +1,41 @@
-import React, { useRef } from 'react';
-import { connect } from 'react-redux';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
-import { Loading } from './Loading';
-import _ from 'lodash';
-import styles from './PageLoading.m.scss';
+import { RootState } from 'app/store/types';
 import clsx from 'clsx';
-import { TransitionGroup, CSSTransition } from 'react-transition-group';
+import { Transition, Variants, motion } from 'motion/react';
+import { useRef } from 'react';
+import { useSelector } from 'react-redux';
+import { Loading } from './Loading';
+import * as styles from './PageLoading.m.scss';
 
-interface StoreProps {
-  message?: string;
-}
+const messageSelector = (state: RootState) => state.shell.loadingMessages.at(-1);
 
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    message: _.last(state.shell.loadingMessages),
-  };
-}
-
-type Props = StoreProps & ThunkDispatchProp;
-
-const transitionClasses = {
-  enter: styles.pageLoadingEnter,
-  enterActive: styles.pageLoadingEnterActive,
-  exit: styles.pageLoadingExit,
-  exitActive: styles.pageLoadingExitActive,
+const animateVariants: Variants = {
+  initial: { opacity: 0 },
+  open: { opacity: 1 },
+};
+const animateTransition: Transition<number> = {
+  duration: 0.1,
+  delay: 0.5,
+  ease: 'easeIn',
 };
 
 /**
- * This displays the page-level loading screen. React Suspense can make this obsolete once it's available.
+ * This displays the page-level loading screen.
  */
-function PageLoading({ message }: Props) {
+export default function PageLoading() {
+  const message = useSelector(messageSelector);
   const nodeRef = useRef<HTMLDivElement>(null);
   return (
-    <TransitionGroup component={null}>
-      {message !== undefined && (
-        <CSSTransition
-          nodeRef={nodeRef}
-          classNames={transitionClasses}
-          timeout={{ enter: 600, exit: 300 }}
-        >
-          <div ref={nodeRef} className={clsx('dim-page', styles.pageLoading)}>
-            <Loading message={message} />
-          </div>
-        </CSSTransition>
-      )}
-    </TransitionGroup>
+    Boolean(message) && (
+      <motion.div
+        ref={nodeRef}
+        className={clsx('dim-page', styles.pageLoading)}
+        initial="initial"
+        animate="open"
+        variants={animateVariants}
+        transition={animateTransition}
+      >
+        <Loading message={message} />
+      </motion.div>
+    )
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(PageLoading);

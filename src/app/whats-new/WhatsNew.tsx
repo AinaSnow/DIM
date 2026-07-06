@@ -1,50 +1,18 @@
-import React from 'react';
-import ChangeLog from './ChangeLog';
+import StaticPage from 'app/dim-ui/StaticPage';
+import { t } from 'app/i18next-t';
+import { usePageTitle } from 'app/utils/hooks';
 import BungieAlerts from './BungieAlerts';
-import { Timeline } from 'react-twitter-widgets';
-import './WhatsNew.scss';
-import { connect } from 'react-redux';
-import { settingsSelector } from 'app/settings/reducer';
-import { RootState } from 'app/store/types';
-
-interface StoreProps {
-  language: string;
-}
-
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    language: settingsSelector(state).language,
-  };
-}
-
-type Props = StoreProps;
+import ChangeLog from './ChangeLog';
 
 /**
  * What's new in the world of DIM?
  */
-function WhatsNew({ language }: Props) {
+export default function WhatsNew() {
+  usePageTitle(t('Header.WhatsNew'));
   return (
-    <div className="dim-page dim-static-page">
+    <StaticPage>
       <BungieAlerts />
-
-      <div className="twitter">
-        <Timeline
-          dataSource={{
-            sourceType: 'profile',
-            screenName: 'ThisIsDIM',
-          }}
-          options={{
-            lang: language,
-            dnt: true,
-            via: 'ThisIsDIM',
-            username: 'ThisIsDIM',
-            height: '100%',
-          }}
-        />
-      </div>
-
       <ChangeLog />
-    </div>
+    </StaticPage>
   );
 }
-export default connect<StoreProps>(mapStateToProps)(WhatsNew);

@@ -1,71 +1,77 @@
-import clsx from 'clsx';
-import { t } from 'app/i18next-t';
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { DestinyAccount } from '../accounts/destiny-account';
-import { CSSTransition, TransitionGroup } from 'react-transition-group';
-import './header.scss';
-import logo from 'images/logo-type-right-light.svg';
-import ClickOutside from '../dim-ui/ClickOutside';
-import Refresh from './refresh';
-import WhatsNewLink from '../whats-new/WhatsNewLink';
-import MenuBadge from './MenuBadge';
-import { AppIcon, menuIcon, searchIcon, settingsIcon } from './icons';
-import { default as SearchFilter } from '../search/SearchFilter';
-import { installPrompt$ } from './app-install';
-import ExternalLink from '../dim-ui/ExternalLink';
-import { connect } from 'react-redux';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
-import { currentAccountSelector } from 'app/accounts/selectors';
 import MenuAccounts from 'app/accounts/MenuAccounts';
-import ReactDOM from 'react-dom';
+import { currentAccountSelector } from 'app/accounts/selectors';
+import { PressTipRoot } from 'app/dim-ui/PressTip';
 import Sheet from 'app/dim-ui/Sheet';
-import { Link, NavLink } from 'react-router-dom';
-import _ from 'lodash';
-import { isDroppingHigh, getAllVendorDrops } from 'app/vendorEngramsXyzApi/vendorEngramsXyzService';
-import vendorEngramSvg from '../../images/engram.svg';
-import { accountRoute } from 'app/routes';
-import { useLocation, useHistory } from 'react-router';
-import styles from './Header.m.scss';
-import { useSubscription } from 'app/utils/hooks';
-import { SearchFilterRef } from 'app/search/SearchFilterInput';
+import { showCheatSheet$ } from 'app/hotkeys/HotkeysCheatSheet';
 import { Hotkey } from 'app/hotkeys/hotkeys';
-import { setSearchQuery } from './actions';
 import { useHotkeys } from 'app/hotkeys/useHotkey';
+import { t } from 'app/i18next-t';
+import { accountRoute } from 'app/routes';
+import { SearchFilterRef } from 'app/search/SearchBar';
+import DimApiWarningBanner from 'app/storage/DimApiWarningBanner';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import StreamDeckButton from 'app/stream-deck/StreamDeckButton/StreamDeckButton';
+import { streamDeckEnabledSelector } from 'app/stream-deck/selectors';
+import { isiOSBrowser } from 'app/utils/browsers';
+import { compact } from 'app/utils/collections';
+import { useSetCSSVarToHeight } from 'app/utils/hooks';
+import { infoLog } from 'app/utils/log';
+import clsx from 'clsx';
+import logo from 'images/logo-type-right-light.svg';
+import { AnimatePresence, Transition, Variants, motion } from 'motion/react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { Link, NavLink, useLocation } from 'react-router';
+import { useSubscription } from 'use-subscription';
+import ClickOutside from '../dim-ui/ClickOutside';
+import ExternalLink from '../dim-ui/ExternalLink';
+import SearchFilter from '../search/SearchFilter';
+import WhatsNewLink from '../whats-new/WhatsNewLink';
+import AppInstallBanner from './AppInstallBanner';
+import * as styles from './Header.m.scss';
+import MenuBadge from './MenuBadge';
+import PostmasterWarningBanner from './PostmasterWarningBanner';
+import RefreshButton from './RefreshButton';
+import { setSearchQuery } from './actions';
+import { installPrompt$ } from './app-install';
+import { AppIcon, faExternalLinkAlt, menuIcon, searchIcon, settingsIcon } from './icons';
+import { userGuideLink } from './links';
+import { useIsPhonePortrait } from './selectors';
 
 const bugReport = 'https://github.com/DestinyItemManager/DIM/issues';
 
-interface StoreProps {
-  account?: DestinyAccount;
-  vendorEngramDropActive: boolean;
-  isPhonePortrait: boolean;
-}
+const logoStyles = {
+  beta: styles.beta,
+  dev: styles.dev,
+  pr: styles.pr,
+  release: undefined,
+  test: undefined,
+} as const;
+
+const menuAnimateVariants: Variants = {
+  open: { x: 0 },
+  collapsed: { x: -250 },
+};
+const menuAnimateTransition: Transition<number> = { type: 'spring', duration: 0.3, bounce: 0 };
 
 // TODO: finally time to hack apart the header styles!
 
-type Props = StoreProps & ThunkDispatchProp;
+export default function Header() {
+  const dispatch = useThunkDispatch();
+  const isPhonePortrait = useIsPhonePortrait();
+  const account = useSelector(currentAccountSelector);
 
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    account: currentAccountSelector(state),
-    vendorEngramDropActive: state.vendorDrops.vendorDrops.some(isDroppingHigh),
-    isPhonePortrait: state.shell.isPhonePortrait,
-  };
-}
-
-function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: Props) {
   // Hamburger menu
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownToggler = useRef<HTMLAnchorElement>(null);
-  const toggleDropdown = useCallback((e) => {
+  const dropdownToggler = useRef<HTMLButtonElement>(null);
+  const toggleDropdown = useCallback((e: React.MouseEvent | KeyboardEvent) => {
     e.preventDefault();
     setDropdownOpen((dropdownOpen) => !dropdownOpen);
   }, []);
 
-  const hideDropdown = (event) => {
-    if (!dropdownToggler.current || !dropdownToggler.current.contains(event.target)) {
-      setDropdownOpen(false);
-    }
-  };
+  const hideDropdown = useCallback(() => {
+    setDropdownOpen(false);
+  }, []);
 
   // Mobile search bar
   const [showSearch, setShowSearch] = useState(false);
@@ -78,8 +84,7 @@ function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: 
 
   // Install DIM as a PWA
   const [promptIosPwa, setPromptIosPwa] = useState(false);
-  const [installPromptEvent, setInstallPromptevent] = useState<any>(undefined);
-  useSubscription(() => installPrompt$.subscribe(setInstallPromptevent));
+  const installPromptEvent = useSubscription(installPrompt$);
 
   const showInstallPrompt = () => {
     setPromptIosPwa(true);
@@ -91,30 +96,35 @@ function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: 
       installPromptEvent.prompt();
       installPromptEvent.userChoice.then((choiceResult) => {
         if (choiceResult.outcome === 'accepted') {
-          console.log('User installed DIM to desktop/home screen');
+          infoLog('install', 'User installed DIM to desktop/home screen');
         } else {
-          console.log('User dismissed the install prompt');
+          infoLog('install', 'User dismissed the install prompt');
         }
         installPrompt$.next(undefined);
       });
+    } else {
+      showInstallPrompt();
     }
   };
 
-  // Poll for vendor engrams
-  const engramRefreshTimer = useRef<number>();
-  useEffect(() => {
-    if ($featureFlags.vendorEngrams && account?.destinyVersion == 2) {
-      setInterval(() => dispatch(getAllVendorDrops()), 5 * 60 * 1000);
-      return () => {
-        if (engramRefreshTimer.current) {
-          clearInterval(engramRefreshTimer.current);
-          engramRefreshTimer.current = 0;
-        }
-      };
-    } else {
-      return;
-    }
-  }, [account?.destinyVersion, dispatch]);
+  // Is this running as an installed app?
+  const isStandalone =
+    window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+
+  const iosPwaAvailable = isiOSBrowser() && !isStandalone;
+
+  const installable = installPromptEvent || iosPwaAvailable;
+
+  const offerRelaunch =
+    // as an alternative to installing,
+    !isStandalone &&
+    !installable &&
+    // offer desktop users
+    !isPhonePortrait;
+  // the choice to relaunch in a no-tabs, less-UI window
+  const reLaunchDim = () => {
+    window.open(window.location.href, '_blank', 'resizable,scrollbars,status');
+  };
 
   // Search filter
   const searchFilter = useRef<SearchFilterRef>(null);
@@ -133,30 +143,27 @@ function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: 
     }
   }, [showSearch]);
 
-  const history = useHistory();
-
-  const nodeRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const bugReportLink = $DIM_FLAVOR !== 'release';
 
-  const isStandalone =
-    (window.navigator as any).standalone === true ||
-    window.matchMedia('(display-mode: standalone)').matches;
+  const navLinkClassName = ({ isActive }: { isActive: boolean }) =>
+    clsx(styles.menuItem, { [styles.active]: isActive });
 
   // Generic links about DIM
   const dimLinks = (
     <>
-      <NavLink to="/about" className="link menuItem">
+      <NavLink to="/about" className={navLinkClassName}>
         {t('Header.About')}
       </NavLink>
-      <WhatsNewLink />
+      <WhatsNewLink className={navLinkClassName} />
       {bugReportLink && (
-        <ExternalLink className="link menuItem" href={bugReport}>
+        <ExternalLink className={styles.menuItem} href={bugReport}>
           {t('Header.ReportBug')}
         </ExternalLink>
       )}
       {isStandalone && (
-        <a className="link menuItem" onClick={() => window.location.reload()}>
+        <a className={styles.menuItem} onClick={() => window.location.reload()}>
           {t('Header.ReloadApp')}
         </a>
       )}
@@ -166,45 +173,39 @@ function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: 
   let links: {
     to: string;
     text: string;
-    hotkey?: string;
     badge?: React.ReactNode;
   }[] = [];
   if (account) {
     const path = accountRoute(account);
-    links = _.compact([
+    links = compact([
       {
         to: `${path}/inventory`,
         text: t('Header.Inventory'),
-        hotkey: 'i',
       },
       account.destinyVersion === 2 && {
         to: `${path}/progress`,
         text: t('Progress.Progress'),
-        hotkey: 'p',
       },
       {
         to: `${path}/vendors`,
         text: t('Vendors.Vendors'),
-        hotkey: 'v',
-        badge: vendorEngramDropActive && (
-          <img src={vendorEngramSvg} className={styles.vendorEngramBadge} />
-        ),
       },
       account.destinyVersion === 2 && {
-        to: `${path}/collections`,
-        text: t('Vendors.Collections'),
-        hotkey: 'c',
+        to: `${path}/records`,
+        text: t('Records.Title'),
       },
+      account.destinyVersion === 2
+        ? { to: `${path}/loadouts`, text: t('Loadouts.Loadouts') }
+        : {
+            to: `${path}/optimizer`,
+            text: t('LB.LB'),
+          },
       {
-        to: `${path}/optimizer`,
-        text: t('LB.LB'),
-        hotkey: 'b',
-      },
-      !isPhonePortrait && {
         to: `${path}/organizer`,
         text: t('Organizer.Organizer'),
-        hotkey: 'o',
       },
+      account.destinyVersion === 2 &&
+        isPhonePortrait && { to: `${path}/item-feed`, text: t('ItemFeed.Description') },
       account.destinyVersion === 1 && {
         to: `${path}/record-books`,
         text: t('RecordBooks.RecordBooks'),
@@ -217,152 +218,185 @@ function Header({ account, vendorEngramDropActive, isPhonePortrait, dispatch }: 
   }
 
   const linkNodes = links.map((link) => (
-    <NavLink className="link menuItem" key={link.to} to={link.to}>
+    <NavLink className={navLinkClassName} key={link.to} to={link.to}>
       {link.badge}
       {link.text}
     </NavLink>
   ));
 
   // Links about the current Destiny version
-  const destinyLinks = <>{linkNodes}</>;
-  const reverseDestinyLinks = <>{linkNodes.slice().reverse()}</>;
+  const destinyLinks = linkNodes;
 
-  const hotkeys: Hotkey[] = [
-    {
-      combo: 'm',
-      description: t('Hotkey.Menu'),
-      callback: toggleDropdown,
-    },
-    ..._.compact(
-      links.map(
-        (link) =>
-          link.hotkey && {
-            combo: link.hotkey,
-            description: link.text,
-            callback: () => history.push(link.to),
-          }
-      )
-    ),
-    {
-      combo: 'f',
-      description: t('Hotkey.StartSearch'),
-      callback: (event) => {
-        if (searchFilter.current) {
-          searchFilter.current.focusFilterInput();
-          if (isPhonePortrait) {
-            setShowSearch(true);
-          }
-        }
-        event.preventDefault();
-        event.stopPropagation();
+  const hotkeys = useMemo(() => {
+    const hotkeys: Hotkey[] = [
+      {
+        combo: 'm',
+        description: t('Hotkey.Menu'),
+        callback: toggleDropdown,
       },
-    },
-    {
-      combo: 'shift+f',
-      description: t('Hotkey.StartSearchClear'),
-      callback: (event) => {
-        if (searchFilter.current) {
-          searchFilter.current.clearFilter();
-          searchFilter.current.focusFilterInput();
-          if (isPhonePortrait) {
-            setShowSearch(true);
+      {
+        combo: 'f',
+        description: t('Hotkey.StartSearch'),
+        callback: (event) => {
+          if (searchFilter.current) {
+            searchFilter.current.focusFilterInput();
+            if (isPhonePortrait) {
+              setShowSearch(true);
+            }
           }
-        }
-        event.preventDefault();
-        event.stopPropagation();
+          event.preventDefault();
+          event.stopPropagation();
+        },
       },
-    },
-  ];
+      {
+        combo: 'shift+f',
+        description: t('Hotkey.StartSearchClear'),
+        callback: (event) => {
+          if (searchFilter.current) {
+            searchFilter.current.clearFilter();
+            searchFilter.current.focusFilterInput();
+            if (isPhonePortrait) {
+              setShowSearch(true);
+            }
+          }
+          event.preventDefault();
+          event.stopPropagation();
+        },
+      },
+    ];
+    return hotkeys;
+  }, [isPhonePortrait, toggleDropdown]);
   useHotkeys(hotkeys);
 
-  const iosPwaAvailable =
-    /iPad|iPhone|iPod/.test(navigator.userAgent) &&
-    !window.MSStream &&
-    (window.navigator as any).standalone !== true;
+  const showKeyboardHelp = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showCheatSheet$.next(true);
+    setDropdownOpen(false);
+  };
+
+  // Calculate the true height of the header, for use in other things
+  const headerRef = useRef<HTMLDivElement>(null);
+  useSetCSSVarToHeight(headerRef, '--header-height');
+
+  const headerLinksRef = useRef<HTMLDivElement>(null);
+
+  const streamDeckEnabled = $featureFlags.elgatoStreamDeck
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks
+      useSelector(streamDeckEnabledSelector)
+    : false;
 
   return (
-    <header id="header" className={showSearch ? 'search-expanded' : ''}>
-      <a
-        className="menu link menuItem"
-        ref={dropdownToggler}
-        onClick={toggleDropdown}
-        role="button"
-        aria-haspopup="menu"
-        aria-label={t('Header.Menu')}
-        aria-expanded={dropdownOpen}
-      >
-        <AppIcon icon={menuIcon} />
-        <MenuBadge />
-      </a>
-      <TransitionGroup component={null}>
-        {dropdownOpen && (
-          <CSSTransition
-            nodeRef={nodeRef}
-            classNames="dropdown"
-            timeout={{ enter: 500, exit: 500 }}
+    <PressTipRoot value={headerRef}>
+      <header className={styles.container} ref={headerRef}>
+        <div className={styles.header}>
+          <button
+            type="button"
+            className={clsx(styles.menuItem, styles.menu)}
+            ref={dropdownToggler}
+            onClick={toggleDropdown}
+            aria-haspopup="menu"
+            aria-label={t('Header.Menu')}
+            aria-expanded={dropdownOpen}
           >
-            <ClickOutside
-              ref={nodeRef}
-              key="dropdown"
-              className="dropdown"
-              onClickOutside={hideDropdown}
-              role="menu"
+            <AppIcon icon={menuIcon} />
+            <MenuBadge />
+          </button>
+          <AnimatePresence>
+            {dropdownOpen && (
+              <motion.div
+                key="dropdown"
+                className={styles.dropdown}
+                role="menu"
+                initial="collapsed"
+                animate="open"
+                exit="collapsed"
+                variants={menuAnimateVariants}
+                transition={menuAnimateTransition}
+              >
+                <ClickOutside
+                  ref={dropdownRef}
+                  extraRef={dropdownToggler}
+                  onClickOutside={hideDropdown}
+                >
+                  {destinyLinks}
+                  <hr />
+                  <NavLink className={navLinkClassName} to="/settings">
+                    {t('Settings.Settings')}
+                  </NavLink>
+                  {!isPhonePortrait && (
+                    <a className={styles.menuItem} onClick={showKeyboardHelp}>
+                      {t('Header.KeyboardShortcuts')}
+                    </a>
+                  )}
+                  <ExternalLink className={styles.menuItem} href={userGuideLink}>
+                    {t('General.UserGuideLink')}
+                  </ExternalLink>
+                  {installable ? (
+                    <a className={styles.menuItem} onClick={installDim}>
+                      {t('Header.InstallDIM')}
+                    </a>
+                  ) : offerRelaunch ? (
+                    <a className={styles.menuItem} onClick={reLaunchDim}>
+                      {t('Header.LaunchDIMAlone')}{' '}
+                      <AppIcon icon={faExternalLinkAlt} className={styles.launchSeparateIcon} />
+                    </a>
+                  ) : null}
+                  {dimLinks}
+                  <hr />
+                  <MenuAccounts closeDropdown={hideDropdown} />
+                </ClickOutside>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <Link to="/" className={clsx(styles.menuItem, styles.logoLink)}>
+            <img
+              className={clsx(styles.logo, logoStyles[$DIM_FLAVOR])}
+              title={`v${$DIM_VERSION} (${$DIM_FLAVOR})`}
+              src={logo}
+              alt="DIM"
+              aria-label="dim"
+            />
+          </Link>
+          <div className={styles.headerLinks} ref={headerLinksRef}>
+            {destinyLinks}
+          </div>
+          <div className={styles.headerRight}>
+            {account && !isPhonePortrait && (
+              <span className={styles.searchLink}>
+                <SearchFilter onClear={hideSearch} ref={searchFilter} />
+              </span>
+            )}
+            {streamDeckEnabled && <StreamDeckButton />}
+            <RefreshButton className={styles.menuItem} />
+            {!isPhonePortrait && (
+              <Link className={styles.menuItem} to="/settings" title={t('Settings.Settings')}>
+                <AppIcon icon={settingsIcon} />
+              </Link>
+            )}
+            <button
+              type="button"
+              className={clsx(styles.menuItem, styles.searchButton)}
+              onClick={toggleSearch}
             >
-              {destinyLinks}
-              <hr />
-              <NavLink className="link menuItem" to="/settings">
-                {t('Settings.Settings')}
-              </NavLink>
-              {installPromptEvent ? (
-                <a className="link menuItem" onClick={installDim}>
-                  {t('Header.InstallDIM')}
-                </a>
-              ) : (
-                iosPwaAvailable && (
-                  <a className="link menuItem" onClick={showInstallPrompt}>
-                    {t('Header.InstallDIM')}
-                  </a>
-                )
-              )}
-              {dimLinks}
-              <MenuAccounts closeDropdown={hideDropdown} />
-            </ClickOutside>
-          </CSSTransition>
-        )}
-      </TransitionGroup>
-      <Link to="/" className="link menuItem logoLink">
-        <img
-          className={clsx('logo', $DIM_FLAVOR)}
-          title={`v${$DIM_VERSION} (${$DIM_FLAVOR})`}
-          src={logo}
-          alt="DIM"
-          aria-label="dim"
-        />
-      </Link>
-      <div className="header-links">{reverseDestinyLinks}</div>
-      <div className="header-right">
-        {account && (!isPhonePortrait || showSearch) && (
-          <span className={clsx('search-link menuItem')}>
+              <AppIcon icon={searchIcon} />
+            </button>
+          </div>
+        </div>
+        {account && isPhonePortrait && showSearch && (
+          <span className="mobile-search-link">
             <SearchFilter onClear={hideSearch} ref={searchFilter} />
           </span>
         )}
-        <Refresh />
-        <Link className="link menuItem" to="/settings" title={t('Settings.Settings')}>
-          <AppIcon icon={settingsIcon} />
-        </Link>
-        <span className="link search-button menuItem" onClick={toggleSearch}>
-          <AppIcon icon={searchIcon} />
-        </span>
-      </div>
-      {promptIosPwa &&
-        ReactDOM.createPortal(
+        {isPhonePortrait && installable && <AppInstallBanner onClick={installDim} />}
+        <PostmasterWarningBanner />
+        {$featureFlags.warnNoSync && <DimApiWarningBanner />}
+        {promptIosPwa && (
           <Sheet header={<h1>{t('Header.InstallDIM')}</h1>} onClose={() => setPromptIosPwa(false)}>
-            <p className="pwa-prompt">{t('Header.IosPwaPrompt')}</p>
-          </Sheet>,
-          document.body
+            <p className={styles.pwaPrompt}>{t('Header.IosPwaPrompt')}</p>
+          </Sheet>
         )}
-    </header>
+      </header>
+    </PressTipRoot>
   );
 }
-
-export default connect(mapStateToProps)(Header);

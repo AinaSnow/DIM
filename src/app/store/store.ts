@@ -1,29 +1,28 @@
-import { applyMiddleware, createStore, compose } from 'redux';
+import { applyMiddleware, compose, legacy_createStore as createStore } from 'redux';
+import { thunk } from 'redux-thunk';
+import { observerMiddleware } from './observerMiddleware';
 import allReducers from './reducers';
-import thunk from 'redux-thunk';
-import { getType } from 'typesafe-actions';
-import { update } from '../inventory/actions';
-import { setD1Manifest, setD2Manifest } from '../manifest/actions';
 import { RootState } from './types';
 
 declare global {
   interface Window {
-    __REDUX_DEVTOOLS_EXTENSION_COMPOSE__(options: any): typeof compose; // eslint-disable-line no-undef
+    // eslint-disable-next-line @typescript-eslint/method-signature-style
+    __REDUX_DEVTOOLS_EXTENSION_COMPOSE__(options: any): typeof compose;
   }
 }
 
 const composeEnhancers = window.__REDUX_DEVTOOLS_EXTENSION_COMPOSE__
   ? window.__REDUX_DEVTOOLS_EXTENSION_COMPOSE__({
       serialize: false,
-      actionsBlacklist: [getType(update), getType(setD1Manifest), getType(setD2Manifest)],
+      actionsBlacklist: ['inventory/UPDATE', 'manifest/D1', 'manifest/D2'],
       stateSanitizer: (state: RootState) =>
         state.inventory ? { ...state, inventory: '<<EXCLUDED>>', manifest: '<<EXCLUDED>>' } : state,
     })
   : compose;
 
-const store = createStore<RootState, any, {}, {}>(
+const store = createStore<RootState, any>(
   allReducers,
-  composeEnhancers(applyMiddleware(thunk))
+  composeEnhancers(applyMiddleware(observerMiddleware, thunk)),
 );
 
 // Allow hot-reloading reducers

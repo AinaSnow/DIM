@@ -1,39 +1,47 @@
+import { t } from 'app/i18next-t';
+import { InGameLoadout } from 'app/loadout/loadout-types';
+import { compareBy } from 'app/utils/comparators';
+import { DimError } from 'app/utils/dim-error';
+import { errorLog } from 'app/utils/log';
 import {
+  AwaAuthorizationResult,
+  AwaType,
+  BungieMembershipType,
   DestinyComponentType,
-  DestinyEquipItemResults,
+  DestinyLinkedProfilesResponse,
   DestinyManifest,
   DestinyProfileResponse,
+  DestinyVendorResponse,
+  DestinyVendorsResponse,
+  PlatformErrorCodes,
+  ServerResponse,
+  awaGetActionToken,
+  awaInitializeRequest,
+  clearLoadout,
   equipItem,
   equipItems as equipItemsApi,
+  equipLoadout,
   getDestinyManifest,
+  getLinkedProfiles,
   getProfile as getProfileApi,
   getVendor as getVendorApi,
   getVendors as getVendorsApi,
   pullFromPostmaster,
-  ServerResponse,
   setItemLockState,
-  transferItem,
-  DestinyVendorResponse,
-  DestinyVendorsResponse,
-  awaInitializeRequest,
-  AwaType,
-  awaGetActionToken,
-  AwaAuthorizationResult,
-  getLinkedProfiles,
-  DestinyLinkedProfilesResponse,
-  BungieMembershipType,
-  getItem,
-  DestinyItemResponse,
   setQuestTrackedState,
+  snapshotLoadout,
+  transferItem,
+  updateLoadoutIdentifiers,
 } from 'bungie-api-ts/destiny2';
-import { t } from 'app/i18next-t';
-import _ from 'lodash';
 import { DestinyAccount } from '../accounts/destiny-account';
-import { httpAdapter, handleUniquenessViolation } from './bungie-service-helper';
-import { getActivePlatform } from '../accounts/get-active-platform';
 import { DimItem } from '../inventory/item-types';
 import { DimStore } from '../inventory/store-types';
-import { reportException } from '../utils/exceptions';
+import { reportException } from '../utils/sentry';
+import {
+  authenticatedHttpClient,
+  handleUniquenessViolation,
+  unauthenticatedHttpClient,
+} from './bungie-service-helper';
 
 /**
  * APIs for interacting with Destiny 2 game data.
@@ -45,14 +53,14 @@ import { reportException } from '../utils/exceptions';
  * Get the information about the current manifest.
  */
 export async function getManifest(): Promise<DestinyManifest> {
-  const response = await getDestinyManifest((config) => httpAdapter(config, true));
+  const response = await getDestinyManifest(unauthenticatedHttpClient);
   return response.Response;
 }
 
 export async function getLinkedAccounts(
-  bungieMembershipId: string
+  bungieMembershipId: string,
 ): Promise<DestinyLinkedProfilesResponse> {
-  const response = await getLinkedProfiles(httpAdapter, {
+  const response = await getLinkedProfiles(authenticatedHttpClient, {
     membershipId: bungieMembershipId,
     membershipType: BungieMembershipType.BungieNext,
     getAllMemberships: true,
@@ -64,8 +72,7 @@ export async function getLinkedAccounts(
  * Get the user's stores on this platform. This includes characters, vault, and item information.
  */
 export function getStores(platform: DestinyAccount): Promise<DestinyProfileResponse> {
-  return getProfile(
-    platform,
+  const components = [
     DestinyComponentType.Profiles,
     DestinyComponentType.ProfileInventories,
     DestinyComponentType.ProfileCurrencies,
@@ -76,9 +83,7 @@ export function getStores(platform: DestinyAccount): Promise<DestinyProfileRespo
     // TODO: consider loading less item data, and then loading item details on click? Makes searches hard though.
     DestinyComponentType.ItemInstances,
     DestinyComponentType.ItemObjectives,
-    DestinyComponentType.ItemStats,
     DestinyComponentType.ItemSockets,
-    DestinyComponentType.ItemTalentGrids,
     DestinyComponentType.ItemCommonData,
     DestinyComponentType.Collectibles,
     DestinyComponentType.ItemPlugStates,
@@ -87,8 +92,18 @@ export function getStores(platform: DestinyAccount): Promise<DestinyProfileRespo
     DestinyComponentType.ItemPlugObjectives,
     // TODO: we should defer this unless you're on the collections screen
     DestinyComponentType.Records,
-    DestinyComponentType.Metrics
-  );
+    DestinyComponentType.Metrics,
+    DestinyComponentType.StringVariables,
+    DestinyComponentType.ProfileProgression,
+    DestinyComponentType.Transitory,
+    DestinyComponentType.CharacterLoadouts,
+    DestinyComponentType.PresentationNodes,
+
+    // This is a lot of data and currently not used.
+    // DestinyComponentType.Craftables,
+  ];
+
+  return getProfile(platform, ...components);
 }
 
 /**
@@ -106,61 +121,55 @@ async function getProfile(
   platform: DestinyAccount,
   ...components: DestinyComponentType[]
 ): Promise<DestinyProfileResponse> {
-  const response = await getProfileApi(httpAdapter, {
+  const response = await getProfileApi(authenticatedHttpClient, {
     destinyMembershipId: platform.membershipId,
     membershipType: platform.originalPlatformType,
     components,
   });
   // TODO: what does it actually look like to not have an account?
   if (Object.keys(response.Response).length === 0) {
-    throw new Error(
+    throw new DimError(
+      'BungieService.NoAccountForPlatform',
       t('BungieService.NoAccountForPlatform', {
         platform: platform.platformLabel,
-      })
+      }),
     );
   }
   return response.Response;
 }
 
-/**
- * Get extra information about a single instanced item. This should be called from the
- * item popup only.
- */
-export async function getItemDetails(
-  itemInstanceId: string,
-  account: DestinyAccount
-): Promise<DestinyItemResponse> {
-  const response = await getItem(httpAdapter, {
-    destinyMembershipId: account.membershipId,
-    membershipType: account.originalPlatformType,
-    itemInstanceId,
-    components: [
-      // Get plug objectives (kill trackers and catalysts)
-      DestinyComponentType.ItemPlugObjectives,
-    ],
-  });
-  return response.Response;
-}
-
-export async function getVendor(
+export async function getVendors(
   account: DestinyAccount,
   characterId: string,
-  vendorHash: number
-): Promise<DestinyVendorResponse> {
-  const response = await getVendorApi(httpAdapter, {
+): Promise<DestinyVendorsResponse> {
+  const response = await getVendorsApi(authenticatedHttpClient, {
     characterId,
     destinyMembershipId: account.membershipId,
     membershipType: account.originalPlatformType,
     components: [
       DestinyComponentType.Vendors,
       DestinyComponentType.VendorSales,
-      DestinyComponentType.ItemInstances,
-      DestinyComponentType.ItemObjectives,
-      DestinyComponentType.ItemStats,
-      DestinyComponentType.ItemSockets,
-      DestinyComponentType.ItemTalentGrids,
       DestinyComponentType.ItemCommonData,
       DestinyComponentType.CurrencyLookups,
+    ],
+  });
+  return response.Response;
+}
+
+/** a single-vendor API fetch, focused on getting the sale item details. see loadAllVendors */
+export async function getVendorSaleComponents(
+  account: DestinyAccount,
+  characterId: string,
+  vendorHash: number,
+): Promise<DestinyVendorResponse> {
+  const response = await getVendorApi(authenticatedHttpClient, {
+    characterId,
+    destinyMembershipId: account.membershipId,
+    membershipType: account.originalPlatformType,
+    components: [
+      DestinyComponentType.ItemInstances,
+      DestinyComponentType.ItemObjectives,
+      DestinyComponentType.ItemSockets,
       DestinyComponentType.ItemPlugStates,
       DestinyComponentType.ItemReusablePlugs,
       // TODO: We should try to defer this until the popup is open!
@@ -171,59 +180,18 @@ export async function getVendor(
   return response.Response;
 }
 
-export async function getVendors(
-  account: DestinyAccount,
-  characterId: string
-): Promise<DestinyVendorsResponse> {
-  const response = await getVendorsApi(httpAdapter, {
-    characterId,
-    destinyMembershipId: account.membershipId,
-    membershipType: account.originalPlatformType,
-    components: [
-      DestinyComponentType.Vendors,
-      DestinyComponentType.VendorSales,
-      DestinyComponentType.ItemInstances,
-      DestinyComponentType.ItemObjectives,
-      DestinyComponentType.ItemStats,
-      DestinyComponentType.ItemSockets,
-      DestinyComponentType.ItemTalentGrids,
-      DestinyComponentType.ItemCommonData,
-      DestinyComponentType.CurrencyLookups,
-      DestinyComponentType.ItemPlugStates,
-      DestinyComponentType.ItemReusablePlugs,
-      // TODO: We should try to defer this until the popup is open!
-      DestinyComponentType.ItemPlugObjectives,
-    ],
-  });
-  return response.Response;
-}
-
-/** Just get the vendors, for seasonal rank */
-export async function getVendorsMinimal(
-  account: DestinyAccount,
-  characterId: string
-): Promise<DestinyVendorsResponse> {
-  const response = await getVendorsApi(httpAdapter, {
-    characterId,
-    destinyMembershipId: account.membershipId,
-    membershipType: account.originalPlatformType,
-    components: [DestinyComponentType.Vendors],
-  });
-  return response.Response;
-}
-
 /**
  * Transfer an item to another store.
  */
 export async function transfer(
+  account: DestinyAccount,
   item: DimItem,
   store: DimStore,
-  amount: number
+  amount: number,
 ): Promise<ServerResponse<number>> {
-  const platform = getActivePlatform();
   const request = {
     characterId: store.isVault || item.location.inPostmaster ? item.owner : store.id,
-    membershipType: platform!.originalPlatformType,
+    membershipType: account.originalPlatformType,
     itemId: item.id,
     itemReferenceHash: item.hash,
     stackSize: amount || item.amount,
@@ -231,67 +199,64 @@ export async function transfer(
   };
 
   const response = item.location.inPostmaster
-    ? pullFromPostmaster(httpAdapter, request)
-    : transferItem(httpAdapter, request);
+    ? pullFromPostmaster(authenticatedHttpClient, request)
+    : transferItem(authenticatedHttpClient, request);
   try {
-    return response;
+    return await response;
   } catch (e) {
-    return handleUniquenessViolation(e, item, store);
+    return handleUniquenessViolation(e, item);
   }
 }
 
-export function equip(item: DimItem): Promise<ServerResponse<number>> {
-  const platform = getActivePlatform();
-
+export function equip(account: DestinyAccount, item: DimItem): Promise<ServerResponse<number>> {
   if (item.owner === 'vault') {
     // TODO: trying to track down https://sentry.io/destiny-item-manager/dim/issues/541412672/?query=is:unresolved
-    console.error('Cannot equip to vault!');
+    errorLog('bungie api', 'Cannot equip to vault!');
     reportException('equipVault', new Error('Cannot equip to vault'));
     return Promise.resolve({}) as Promise<ServerResponse<number>>;
   }
 
-  return equipItem(httpAdapter, {
+  return equipItem(authenticatedHttpClient, {
     characterId: item.owner,
-    membershipType: platform!.originalPlatformType,
+    membershipType: account.originalPlatformType,
     itemId: item.id,
   });
 }
 
 /**
- * Equip multiple items at once.
- * @returns a list of items that were successfully equipped
+ * Equip items in bulk. Returns a mapping from item ID to error code for each item
  */
-export async function equipItems(store: DimStore, items: DimItem[]): Promise<DimItem[]> {
+export async function equipItems(
+  account: DestinyAccount,
+  store: DimStore,
+  items: DimItem[],
+): Promise<{ [itemInstanceId: string]: PlatformErrorCodes }> {
   // TODO: test if this is still broken in D2
   // Sort exotics to the end. See https://github.com/DestinyItemManager/DIM/issues/323
-  items = _.sortBy(items, (i) => (i.isExotic ? 1 : 0));
+  const itemIds = items.toSorted(compareBy((i) => i.isExotic)).map((i) => i.id);
 
-  const platform = getActivePlatform();
-  const response = await equipItemsApi(httpAdapter, {
+  const response = await equipItemsApi(authenticatedHttpClient, {
     characterId: store.id,
-    membershipType: platform!.originalPlatformType,
-    itemIds: items.map((i) => i.id),
+    membershipType: account.originalPlatformType,
+    itemIds,
   });
-  const data: DestinyEquipItemResults = response.Response;
-  return items.filter((i) => {
-    const item = data.equipResults.find((r) => r.itemInstanceId === i.id);
-    return item?.equipStatus === 1;
-  });
+  return Object.fromEntries(
+    response.Response.equipResults.map((r) => [r.itemInstanceId, r.equipStatus]),
+  );
 }
 
 /**
  * Set the lock state of an item.
  */
 export function setLockState(
-  store: DimStore,
+  account: DestinyAccount,
+  storeId: string,
   item: DimItem,
-  lockState: boolean
+  lockState: boolean,
 ): Promise<ServerResponse<number>> {
-  const account = getActivePlatform();
-
-  return setItemLockState(httpAdapter, {
-    characterId: store.isVault ? item.owner : store.id,
-    membershipType: account!.originalPlatformType,
+  return setItemLockState(authenticatedHttpClient, {
+    characterId: storeId,
+    membershipType: account.originalPlatformType,
     itemId: item.id,
     state: lockState,
   });
@@ -301,38 +266,79 @@ export function setLockState(
  * Set the tracked state of an item.
  */
 export function setTrackedState(
-  store: DimStore,
+  account: DestinyAccount,
+  storeId: string,
   item: DimItem,
-  trackedState: boolean
+  trackedState: boolean,
 ): Promise<ServerResponse<number>> {
-  const account = getActivePlatform();
-
-  if (item.id === '0') {
-    throw new Error("Can't track non-instanced items");
+  if (!item.trackable) {
+    throw new Error("Can't track non-trackable items");
   }
 
-  return setQuestTrackedState(httpAdapter, {
-    characterId: store.isVault ? item.owner : store.id,
-    membershipType: account!.originalPlatformType,
+  return setQuestTrackedState(authenticatedHttpClient, {
+    characterId: storeId,
+    membershipType: account.originalPlatformType,
     itemId: item.id,
     state: trackedState,
   });
 }
 
-// TODO: owner can't be "vault" I bet
 export async function requestAdvancedWriteActionToken(
   account: DestinyAccount,
   action: AwaType,
-  item?: DimItem
+  storeId: string,
+  item?: DimItem,
 ): Promise<AwaAuthorizationResult> {
-  const awaInitResult = await awaInitializeRequest(httpAdapter, {
+  const awaInitResult = await awaInitializeRequest(authenticatedHttpClient, {
     type: action,
     membershipType: account.originalPlatformType,
     affectedItemId: item ? item.id : undefined,
-    characterId: item ? item.owner : undefined,
+    characterId: storeId,
   });
-  const awaTokenResult = await awaGetActionToken(httpAdapter, {
+  const awaTokenResult = await awaGetActionToken(authenticatedHttpClient, {
     correlationId: awaInitResult.Response.correlationId,
   });
   return awaTokenResult.Response;
+}
+
+export async function equipInGameLoadout(account: DestinyAccount, loadout: InGameLoadout) {
+  const result = equipLoadout(authenticatedHttpClient, {
+    loadoutIndex: loadout.index,
+    characterId: loadout.characterId,
+    membershipType: account.originalPlatformType,
+  });
+  return result;
+}
+
+export async function snapshotInGameLoadout(account: DestinyAccount, loadout: InGameLoadout) {
+  const result = snapshotLoadout(authenticatedHttpClient, {
+    loadoutIndex: loadout.index,
+    characterId: loadout.characterId,
+    membershipType: account.originalPlatformType,
+    colorHash: loadout.colorHash,
+    iconHash: loadout.iconHash,
+    nameHash: loadout.nameHash,
+  });
+  return result;
+}
+
+export async function clearInGameLoadout(account: DestinyAccount, loadout: InGameLoadout) {
+  const result = clearLoadout(authenticatedHttpClient, {
+    loadoutIndex: loadout.index,
+    characterId: loadout.characterId,
+    membershipType: account.originalPlatformType,
+  });
+  return result;
+}
+
+export async function editInGameLoadout(account: DestinyAccount, loadout: InGameLoadout) {
+  const result = updateLoadoutIdentifiers(authenticatedHttpClient, {
+    loadoutIndex: loadout.index,
+    characterId: loadout.characterId,
+    membershipType: account.originalPlatformType,
+    colorHash: loadout.colorHash,
+    iconHash: loadout.iconHash,
+    nameHash: loadout.nameHash,
+  });
+  return result;
 }

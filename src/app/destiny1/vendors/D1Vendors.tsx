@@ -1,80 +1,52 @@
-import React from 'react';
-import { DestinyAccount } from '../../accounts/destiny-account';
-import { Subscriptions } from '../../utils/rx-utils';
-import { refresh$ } from '../../shell/refresh';
-import { dimVendorService, Vendor } from './vendor.service';
-import { D1Store } from '../../inventory/store-types';
-import _ from 'lodash';
-import D1Vendor from './D1Vendor';
-import styles from './D1Vendors.m.scss';
 import ShowPageLoading from 'app/dim-ui/ShowPageLoading';
 import { t } from 'app/i18next-t';
-
-interface Props {
-  account: DestinyAccount;
-}
-
-interface State {
-  vendors?: {
-    [vendorHash: number]: Vendor;
-  };
-  stores?: D1Store[];
-}
+import { currenciesSelector, storesSelector } from 'app/inventory/selectors';
+import { useLoadStores } from 'app/inventory/store/hooks';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { compareBy } from 'app/utils/comparators';
+import { useEffect, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { DestinyAccount } from '../../accounts/destiny-account';
+import { D1Store } from '../../inventory/store-types';
+import D1Vendor from './D1Vendor';
+import * as styles from './D1Vendors.m.scss';
+import { Vendor, countCurrencies, loadVendors } from './vendor.service';
 
 /**
  * The "All Vendors" page for D1 that shows all the rotating vendors.
  */
-export default class D1Vendors extends React.Component<Props, State> {
-  private subscriptions = new Subscriptions();
+export default function D1Vendors({ account }: { account: DestinyAccount }) {
+  const dispatch = useThunkDispatch();
+  const stores = useSelector(storesSelector) as D1Store[];
+  const currencies = useSelector(currenciesSelector);
 
-  constructor(props: Props) {
-    super(props);
-    this.state = {};
-  }
+  const [vendors, setVendors] = useState<{
+    [vendorHash: number]: Vendor;
+  }>();
 
-  componentDidMount() {
-    this.subscriptions.add(
-      refresh$.subscribe(() => {
-        dimVendorService.reloadVendors();
-      }),
-      dimVendorService.getVendorsStream(this.props.account).subscribe(([stores, vendors]) => {
-        this.setState({ stores, vendors });
-        dimVendorService.requestRatings();
-      })
-    );
-  }
+  const storesLoaded = useLoadStores(account);
 
-  componentWillUnmount() {
-    this.subscriptions.unsubscribe();
-  }
-
-  render() {
-    const { stores, vendors } = this.state;
-
-    if (!vendors || !stores) {
-      return <ShowPageLoading message={t('Loading.Profile')} />;
-    }
-
-    const totalCoins = dimVendorService.countCurrencies(stores, vendors);
-    const ownedItemHashes = new Set<number>();
-    for (const store of stores) {
-      for (const item of store.items) {
-        ownedItemHashes.add(item.hash);
+  useEffect(() => {
+    (async () => {
+      if (stores.length) {
+        const vendors = await dispatch(loadVendors());
+        setVendors(vendors);
       }
-    }
-    const sortedVendors = _.sortBy(Object.values(vendors), (v) => v.vendorOrder);
+    })();
+  }, [stores.length, dispatch]);
 
-    return (
-      <div className={styles.vendors}>
-        {sortedVendors.map((vendor) => (
-          <D1Vendor
-            key={vendor.hash}
-            vendor={vendor}
-            totalCoins={totalCoins}
-            ownedItemHashes={ownedItemHashes}
-          />
-        ))}
-      </div>
-    );
+  if (!vendors || !storesLoaded) {
+    return <ShowPageLoading message={t('Loading.Profile')} />;
   }
+
+  const totalCoins = countCurrencies(stores, vendors, currencies);
+  const sortedVendors = Object.values(vendors).sort(compareBy((v) => v.vendorOrder));
+
+  return (
+    <div className={styles.vendors}>
+      {sortedVendors.map((vendor) => (
+        <D1Vendor key={vendor.hash} vendor={vendor} totalCoins={totalCoins} />
+      ))}
+    </div>
+  );
 }

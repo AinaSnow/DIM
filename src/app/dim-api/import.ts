@@ -1,27 +1,32 @@
-import { DimData } from 'app/storage/sync.service';
-import { ThunkResult } from 'app/store/types';
-import { importData } from './dim-api';
-import { loadDimApiData } from './actions';
-import { DimApiState, makeProfileKey } from './reducer';
-import { profileLoadedFromIDB } from './basic-actions';
-import { initialSettingsState } from 'app/settings/initial-settings';
-import { DestinyClass } from 'bungie-api-ts/destiny2';
 import {
-  Loadout,
   DestinyVersion,
-  ItemAnnotation,
   ExportResponse,
+  ItemAnnotation,
+  Loadout,
 } from '@destinyitemmanager/dim-api-types';
-import { showNotification } from 'app/notifications/notifications';
 import { t } from 'app/i18next-t';
-import { observeStore } from 'app/utils/redux-utils';
-import _ from 'lodash';
+import { showNotification } from 'app/notifications/notifications';
+import { Settings, initialSettingsState } from 'app/settings/initial-settings';
+import { observe, unobserve } from 'app/store/observerMiddleware';
+import { ThunkResult } from 'app/store/types';
+import { errorMessage } from 'app/utils/errors';
+import { errorLog, infoLog } from 'app/utils/log';
+import { delay } from 'app/utils/promises';
+import { keyBy } from 'es-toolkit';
+import { Dispatch } from 'redux';
+import { loadDimApiData } from './actions';
+import { profileLoadedFromIDB } from './basic-actions';
+import { importData } from './dim-api';
+import { type DimApiState } from './reducer';
+import { makeProfileKey } from './selectors';
+
+const TAG = 'importData';
 
 /**
- * Import data (either legacy-format from SyncService or the new DIM Sync export) into DIM Sync.
+ * Import data in the DIM Sync export format into DIM Sync or local storage.
  * This is from a user clicking "Import" and will always overwrite the data saved locally or on the server.
  */
-export function importDataBackup(data: DimData | ExportResponse, silent = false): ThunkResult {
+export function importDataBackup(data: ExportResponse, silent = false): ThunkResult {
   return async (dispatch, getState) => {
     const dimApiData = getState().dimApi;
 
@@ -30,137 +35,165 @@ export function importDataBackup(data: DimData | ExportResponse, silent = false)
       dimApiData.apiPermissionGranted &&
       !dimApiData.profileLoaded
     ) {
-      await waitForProfileLoad();
+      await waitForProfileLoad(dispatch);
     }
 
     if (dimApiData.globalSettings.dimApiEnabled && dimApiData.apiPermissionGranted) {
       try {
-        console.log('[importLegacyData] Attempting to import legacy data into DIM API');
+        infoLog(TAG, 'Attempting to import data into DIM API');
         const result = await importData(data);
-        console.log('[importLegacyData] Successfully imported legacy data into DIM API', result);
-        showImportSuccessNotification(result, true);
 
-        // Reload from the server
-        return dispatch(loadDimApiData(true));
+        // Import immediately into local state
+        dispatch(importBackupIntoLocalState(data, true));
+
+        // dim-api can cache the data for up to 60 seconds. Reload from the
+        // server after that so we don't use our faked import data too long. We
+        // won't wait for this.
+        delay(60_000).then(() => dispatch(loadDimApiData({ forceLoad: true })));
+        infoLog(TAG, 'Successfully imported data into DIM API', result);
+        showImportSuccessNotification(result, true);
+        return;
       } catch (e) {
         if (!silent) {
-          console.error('[importLegacyData] Error importing legacy data into DIM API', e);
-          showImportFailedNotification(e);
+          errorLog(TAG, 'Error importing data into DIM API', e);
+          showImportFailedNotification(errorMessage(e));
         }
         return;
       }
     } else {
       // Import directly into local state, since the user doesn't want to use DIM Sync
-      const settings = data.settings || data['settings-v1.0'];
-      const loadouts = extractLoadouts(data);
-      const tags = extractItemAnnotations(data);
-      const triumphs: ExportResponse['triumphs'] = data.triumphs || [];
-      const itemHashTags: ExportResponse['itemHashTags'] = data.itemHashTags || [];
-      const importedSearches: ExportResponse['searches'] = data.searches || [];
+      dispatch(importBackupIntoLocalState(data, silent));
+    }
+  };
+}
 
-      if (!loadouts.length && !tags.length) {
-        if (!silent) {
-          console.error(
-            '[importLegacyData] Error importing legacy data into DIM API - no data',
-            data
-          );
-          showImportFailedNotification(new Error(t('Storage.ImportNotification.NoData')));
+function importBackupIntoLocalState(data: ExportResponse, silent = false): ThunkResult {
+  return async (dispatch, getState) => {
+    const settings = data.settings;
+    const loadouts = extractLoadouts(data);
+    const tags = extractItemAnnotations(data);
+    const triumphs: ExportResponse['triumphs'] = data.triumphs || [];
+    const itemHashTags: ExportResponse['itemHashTags'] = data.itemHashTags || [];
+    const importedSearches: ExportResponse['searches'] = data.searches || [];
+
+    if (!loadouts.length && !tags.length) {
+      if (!silent) {
+        errorLog(
+          'importData',
+          'Error importing data into DIM - no data found in import file. (no settings upgrade/API upload attempted. DIM Sync is turned off)',
+          data,
+        );
+        showImportFailedNotification(t('Storage.ImportNotification.NoData'));
+      }
+      return;
+    }
+
+    const profiles: DimApiState['profiles'] = {};
+
+    for (const platformLoadout of loadouts) {
+      const { platformMembershipId, destinyVersion, ...loadout } = platformLoadout;
+      if (platformMembershipId && destinyVersion) {
+        const key = makeProfileKey(platformMembershipId, destinyVersion);
+        if (!profiles[key]) {
+          profiles[key] = {
+            profileLastLoaded: 0,
+            loadouts: {},
+            tags: {},
+            triumphs: [],
+          };
         }
-        return;
+        profiles[key].loadouts[loadout.id] = loadout;
       }
-
-      const profiles: DimApiState['profiles'] = {};
-
-      for (const platformLoadout of loadouts) {
-        const { platformMembershipId, destinyVersion, ...loadout } = platformLoadout;
-        if (platformMembershipId && destinyVersion) {
-          const key = makeProfileKey(platformMembershipId, destinyVersion);
-          if (!profiles[key]) {
-            profiles[key] = {
-              loadouts: {},
-              tags: {},
-              triumphs: [],
-            };
-          }
-          profiles[key].loadouts[loadout.id] = loadout;
+    }
+    for (const platformTag of tags) {
+      const { platformMembershipId, destinyVersion, ...tag } = platformTag;
+      if (platformMembershipId && destinyVersion) {
+        const key = makeProfileKey(platformMembershipId, destinyVersion);
+        if (!profiles[key]) {
+          profiles[key] = {
+            profileLastLoaded: 0,
+            loadouts: {},
+            tags: {},
+            triumphs: [],
+          };
         }
+        profiles[key].tags[tag.id] = tag;
       }
-      for (const platformTag of tags) {
-        const { platformMembershipId, destinyVersion, ...tag } = platformTag;
-        if (platformMembershipId && destinyVersion) {
-          const key = makeProfileKey(platformMembershipId, destinyVersion);
-          if (!profiles[key]) {
-            profiles[key] = {
-              loadouts: {},
-              tags: {},
-              triumphs: [],
-            };
-          }
-          profiles[key].tags[tag.id] = tag;
+    }
+
+    for (const triumphData of triumphs) {
+      const { platformMembershipId, triumphs } = triumphData;
+      if (platformMembershipId) {
+        const key = makeProfileKey(platformMembershipId, 2);
+        if (!profiles[key]) {
+          profiles[key] = {
+            profileLastLoaded: 0,
+            loadouts: {},
+            tags: {},
+            triumphs: [],
+          };
         }
+        profiles[key].triumphs = triumphs;
       }
+    }
 
-      for (const triumphData of triumphs) {
-        const { platformMembershipId, triumphs } = triumphData;
-        if (platformMembershipId) {
-          const key = makeProfileKey(platformMembershipId, 2);
-          if (!profiles[key]) {
-            profiles[key] = {
-              loadouts: {},
-              tags: {},
-              triumphs: [],
-            };
-          }
-          profiles[key].triumphs = triumphs;
-        }
-      }
+    const searches: DimApiState['searches'] = {
+      1: [],
+      2: [],
+    };
+    for (const search of importedSearches) {
+      searches[search.destinyVersion].push(search.search);
+    }
 
-      const searches: DimApiState['searches'] = {
-        1: [],
-        2: [],
-      };
-      for (const search of importedSearches) {
-        searches[search.destinyVersion].push(search.search);
-      }
+    dispatch(
+      profileLoadedFromIDB({
+        settings: { ...initialSettingsState, ...settings } as Settings,
+        profiles,
+        itemHashTags: keyBy(itemHashTags, (t) => t.hash),
+        searches,
+        updateQueue: [],
+        globalSettings: getState().dimApi.globalSettings,
+      }),
+    );
 
-      dispatch(
-        profileLoadedFromIDB({
-          settings: { ...initialSettingsState, ...settings },
-          profiles,
-          itemHashTags: _.keyBy(itemHashTags, (t) => t.hash),
-          searches,
-          updateQueue: [],
-        })
-      );
+    if (!silent) {
       showImportSuccessNotification(
         {
           loadouts: loadouts.length,
           tags: tags.length,
         },
-        false
+        false,
       );
     }
   };
 }
 
+// Each observer that is used to observe the change in dimApi profileLoaded state
+// should be unique, so use a module reference counter.
+let profileLoadObserverCount = 0;
 /** Returns a promise that resolves when the profile is fully loaded. */
-function waitForProfileLoad() {
+function waitForProfileLoad<D extends Dispatch>(dispatch: D) {
+  const observerId = `profile-load-observer-${profileLoadObserverCount++}`;
   return new Promise((resolve) => {
-    const unsubscribe = observeStore(
-      (state) => state.dimApi.profileLoaded,
-      (_, loaded) => {
-        if (loaded) {
-          unsubscribe();
-          resolve();
-        }
-      }
+    dispatch(
+      observe({
+        id: observerId,
+        runInitially: true,
+        getObserved: (rootState) => rootState.dimApi.profileLoaded,
+        sideEffect: ({ current }) => {
+          if (current) {
+            dispatch(unobserve(observerId));
+            resolve(undefined);
+          }
+        },
+      }),
     );
   });
 }
 
 function showImportSuccessNotification(
   result: { loadouts: number; tags: number },
-  dimSync: boolean
+  dimSync: boolean,
 ) {
   showNotification({
     type: 'success',
@@ -172,29 +205,14 @@ function showImportSuccessNotification(
   });
 }
 
-function showImportFailedNotification(e: Error) {
+function showImportFailedNotification(message: string) {
   showNotification({
     type: 'error',
     title: t('Storage.ImportNotification.FailedTitle'),
-    body: t('Storage.ImportNotification.FailedBody', { error: e.message }),
+    body: t('Storage.ImportNotification.FailedBody', { error: message }),
     duration: 15000,
   });
 }
-
-/** This is the enum loadouts have been stored with - it does not align with DestinyClass */
-const enum LoadoutClass {
-  any = -1,
-  warlock = 0,
-  titan = 1,
-  hunter = 2,
-}
-
-const loadoutClassToClassType = {
-  [LoadoutClass.warlock]: DestinyClass.Warlock,
-  [LoadoutClass.titan]: DestinyClass.Titan,
-  [LoadoutClass.hunter]: DestinyClass.Hunter,
-  [LoadoutClass.any]: DestinyClass.Unknown,
-};
 
 type PlatformLoadout = Loadout & {
   platformMembershipId: string;
@@ -202,9 +220,9 @@ type PlatformLoadout = Loadout & {
 };
 
 /**
- * Extract loadouts in DIM API format from the legacy DimData or a new DIM Sync export.
+ * Extract loadouts in DIM API format from an export.
  */
-function extractLoadouts(importData: DimData): PlatformLoadout[] {
+function extractLoadouts(importData: ExportResponse): PlatformLoadout[] {
   if (importData.loadouts) {
     return importData.loadouts.map((l) => ({
       ...l.loadout,
@@ -212,29 +230,7 @@ function extractLoadouts(importData: DimData): PlatformLoadout[] {
       destinyVersion: l.destinyVersion,
     }));
   }
-
-  const ids = importData['loadouts-v3.0'];
-  if (!ids) {
-    return [];
-  }
-  return ids
-    .map((id) => importData[id])
-    .filter(Boolean)
-    .map((rawLoadout) => ({
-      platformMembershipId: rawLoadout.membershipId,
-      destinyVersion: rawLoadout.destinyVersion,
-      id: rawLoadout.id,
-      name: rawLoadout.name,
-      classType:
-        loadoutClassToClassType[rawLoadout.classType === undefined ? -1 : rawLoadout.classType],
-      clearSpace: rawLoadout.clearSpace || false,
-      equipped: rawLoadout.items
-        .filter((i) => i.equipped)
-        .map((item) => ({ id: item.id, hash: item.hash, amount: item.amount })),
-      unequipped: rawLoadout.items
-        .filter((i) => !i.equipped)
-        .map((item) => ({ id: item.id, hash: item.hash, amount: item.amount })),
-    }));
+  return [];
 }
 
 type PlatformItemAnnotation = ItemAnnotation & {
@@ -243,9 +239,9 @@ type PlatformItemAnnotation = ItemAnnotation & {
 };
 
 /**
- * Extract tags/notes in DIM API format from the legacy DimData or a new DIM Sync export.
+ * Extract tags/notes in DIM API format from an export.
  */
-function extractItemAnnotations(importData: DimData): PlatformItemAnnotation[] {
+function extractItemAnnotations(importData: ExportResponse): PlatformItemAnnotation[] {
   if (importData.tags) {
     return importData.tags.map((t) => ({
       ...t.annotation,
@@ -253,24 +249,5 @@ function extractItemAnnotations(importData: DimData): PlatformItemAnnotation[] {
       destinyVersion: t.destinyVersion,
     }));
   }
-
-  const annotations: PlatformItemAnnotation[] = [];
-  for (const key in importData) {
-    const match = /dimItemInfo-m(\d+)-d(1|2)/.exec(key);
-    if (match) {
-      const platformMembershipId = match[1];
-      const destinyVersion = parseInt(match[2], 10) as DestinyVersion;
-      for (const id in importData[key]) {
-        const value = importData[key][id];
-        annotations.push({
-          platformMembershipId,
-          destinyVersion,
-          id,
-          tag: value.tag,
-          notes: value.notes,
-        });
-      }
-    }
-  }
-  return annotations;
+  return [];
 }

@@ -1,162 +1,97 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { DimItem } from '../inventory/item-types';
-import { ItemPickerState } from './item-picker';
-import Sheet from '../dim-ui/Sheet';
-import ConnectedInventoryItem from '../inventory/ConnectedInventoryItem';
-import { connect, MapStateToProps } from 'react-redux';
-import { RootState } from 'app/store/types';
-import { createSelector } from 'reselect';
-import { storesSelector } from '../inventory/selectors';
-import { SearchFilters, searchFiltersConfigSelector } from '../search/search-filter';
-import SearchFilterInput, { SearchFilterRef } from '../search/SearchFilterInput';
-import { sortItems } from '../shell/filters';
-import { itemSortOrderSelector } from '../settings/item-sort';
-import clsx from 'clsx';
+import ClassIcon from 'app/dim-ui/ClassIcon';
 import { t } from 'app/i18next-t';
-import './ItemPicker.scss';
-import { setSetting } from '../settings/actions';
-import _ from 'lodash';
-import { settingsSelector } from 'app/settings/reducer';
+import { hideItemPopup, showItemPopup, showItemPopup$ } from 'app/item-popup/item-popup';
+import SearchBar from 'app/search/SearchBar';
+import { filterFactorySelector } from 'app/search/items/item-search-filter';
+import { uniqBy } from 'app/utils/collections';
+import { compareBy } from 'app/utils/comparators';
+import { BucketHashes } from 'data/d2/generated-enums';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { mergeProps, useKeyboard, useLongPress, usePress } from 'react-aria';
+import { useSelector } from 'react-redux';
+import Sheet from '../dim-ui/Sheet';
+import '../inventory-page/StoreBucket.scss';
+import ConnectedInventoryItem from '../inventory/ConnectedInventoryItem';
+import { DimItem } from '../inventory/item-types';
+import { allItemsSelector } from '../inventory/selectors';
+import { itemSorterSelector } from '../settings/item-sort';
+import * as styles from './ItemPicker.m.scss';
+import { ItemPickerState } from './item-picker';
 
-type ProvidedProps = ItemPickerState & {
-  onSheetClosed(): void;
-};
+export default function ItemPicker({
+  prompt,
+  filterItems,
+  sortBy,
+  uniqueBy,
+  onItemSelected,
+  onSheetClosed,
+}: ItemPickerState & {
+  onSheetClosed: () => void;
+}) {
+  const [liveQuery, setQuery] = useState('');
+  const query = useDeferredValue(liveQuery);
+  const allItems = useSelector(allItemsSelector);
+  const filters = useSelector(filterFactorySelector);
+  const sortItems = useSelector(itemSorterSelector);
 
-interface StoreProps {
-  allItems: DimItem[];
-  filters: SearchFilters;
-  itemSortOrder: string[];
-  isPhonePortrait: boolean;
-  preferEquip: boolean;
-}
-
-function mapStateToProps(): MapStateToProps<StoreProps, ProvidedProps, RootState> {
-  const filteredItemsSelector = createSelector(
-    storesSelector,
-    (_: RootState, ownProps: ProvidedProps) => ownProps.filterItems,
-    (stores, filterItems) =>
-      stores.flatMap((s) => (filterItems ? s.items.filter(filterItems) : s.items))
+  const onItemSelectedFn = useCallback(
+    (item: DimItem, onClose: () => void) => {
+      onItemSelected(item);
+      onClose();
+    },
+    [onItemSelected],
   );
 
-  return (state, ownProps) => ({
-    allItems: filteredItemsSelector(state, ownProps),
-    filters: searchFiltersConfigSelector(state),
-    itemSortOrder: itemSortOrderSelector(state),
-    isPhonePortrait: state.shell.isPhonePortrait,
-    preferEquip: settingsSelector(state).itemPickerEquip,
-  });
-}
-
-const mapDispatchToProps = {
-  setSetting,
-};
-type DispatchProps = typeof mapDispatchToProps;
-
-type Props = ProvidedProps & StoreProps & DispatchProps;
-
-function ItemPicker({
-  equip,
-  preferEquip,
-  allItems,
-  prompt,
-  filters,
-  itemSortOrder,
-  hideStoreEquip,
-  sortBy,
-  isPhonePortrait,
-  ignoreSelectedPerks,
-  onItemSelected,
-  onCancel,
-  onSheetClosed,
-  setSetting,
-}: Props) {
-  const [query, setQuery] = useState('');
-  const [equipToggled, setEquipToggled] = useState(equip ?? preferEquip);
-  const [height, setHeight] = useState<number | undefined>(undefined);
-
-  const itemContainer = useRef<HTMLDivElement>(null);
-  const filterInput = useRef<SearchFilterRef>(null);
-
-  useEffect(() => {
-    if (itemContainer.current && !height) {
-      setHeight(itemContainer.current.clientHeight);
-    }
-  }, [height]);
-
-  // On iOS at least, focusing the keyboard pushes the content off the screen
-  const autoFocus =
-    !isPhonePortrait && !(/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream);
-
-  const onItemSelectedFn = (item: DimItem, onClose: () => void) => {
-    onItemSelected({ item, equip: equipToggled });
-    onClose();
-  };
-
   const onSheetClosedFn = () => {
-    onCancel();
+    onItemSelected(undefined);
     onSheetClosed();
-  };
-
-  const setEquip = () => {
-    setEquipToggled(true);
-    setSetting('itemPickerEquip', true);
-  };
-  const setStore = () => {
-    setEquipToggled(false);
-    setSetting('itemPickerEquip', false);
   };
 
   const header = (
     <div>
-      <h1 className="destiny">{prompt || t('ItemPicker.ChooseItem')}</h1>
-      <div className="item-picker-search">
-        <SearchFilterInput
-          ref={filterInput}
-          placeholder={t('ItemPicker.SearchPlaceholder')}
-          autoFocus={autoFocus}
-          onQueryChanged={setQuery}
-        />
-        {!hideStoreEquip && (
-          <div className="split-buttons">
-            <button
-              type="button"
-              className={clsx('dim-button', { selected: equipToggled })}
-              onClick={setEquip}
-            >
-              {t('MovePopup.Equip')}
-            </button>
-            <button
-              type="button"
-              className={clsx('dim-button', { selected: !equipToggled })}
-              onClick={setStore}
-            >
-              {t('MovePopup.Store')}
-            </button>
-          </div>
-        )}
-      </div>
+      <h1>{prompt || t('ItemPicker.ChooseItem')}</h1>
+      <SearchBar
+        placeholder={t('ItemPicker.SearchPlaceholder')}
+        onQueryChanged={setQuery}
+        instant
+      />
     </div>
   );
 
-  const filter = useMemo(() => filters.filterFunction(query), [filters, query]);
+  // All items, filtered by the pre-filter configured on the item picker
+  const filteredItems = useMemo(
+    () => (filterItems ? allItems.filter(filterItems) : allItems),
+    [allItems, filterItems],
+  );
+  // Further filtered by the search bar in the item picker
   const items = useMemo(() => {
-    let items = sortItems(allItems.filter(filter), itemSortOrder);
+    let items = sortItems(filteredItems.filter(filters(query)));
     if (sortBy) {
-      items = _.sortBy(items, sortBy);
+      items = items.toSorted(compareBy(sortBy));
+    }
+    if (uniqueBy) {
+      items = uniqBy(items, uniqueBy);
     }
     return items;
-  }, [allItems, filter, itemSortOrder, sortBy]);
+  }, [sortItems, filteredItems, filters, query, sortBy, uniqueBy]);
 
+  // TODO: have compact and "list" views
+  // TODO: long press for item popup
   return (
-    <Sheet onClose={onSheetClosedFn} header={header} sheetClassName="item-picker">
+    <Sheet
+      onClose={onSheetClosedFn}
+      header={header}
+      freezeInitialHeight={true}
+      allowClickThrough={true}
+    >
       {({ onClose }) => (
-        <div className="sub-bucket" ref={itemContainer} style={{ height }}>
+        <div className={styles.grid}>
           {items.map((item) => (
-            <ConnectedInventoryItem
+            <ItemPickerItem
               key={item.index}
               item={item}
-              onClick={() => onItemSelectedFn(item, onClose)}
-              ignoreSelectedPerks={ignoreSelectedPerks}
+              onClose={onClose}
+              onItemSelectedFn={onItemSelectedFn}
             />
           ))}
         </div>
@@ -165,4 +100,68 @@ function ItemPicker({
   );
 }
 
-export default connect<StoreProps, DispatchProps>(mapStateToProps, mapDispatchToProps)(ItemPicker);
+function ItemPickerItem({
+  item,
+  onClose,
+  onItemSelectedFn,
+}: {
+  item: DimItem;
+  onClose: () => void;
+  onItemSelectedFn: (item: DimItem, onClose: () => void) => void;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const { longPressProps } = useLongPress({
+    onLongPress: () => {
+      showItemPopup(item, ref.current!);
+    },
+  });
+  const { pressProps } = usePress({
+    onPress: (e) => {
+      if (e.shiftKey) {
+        showItemPopup(item, ref.current!);
+      } else if (showItemPopup$.getCurrentValue()?.item) {
+        hideItemPopup();
+      } else {
+        onItemSelectedFn(item, onClose);
+      }
+    },
+  });
+
+  const { keyboardProps } = useKeyboard({
+    onKeyDown: (e) => {
+      if (e.key === 'i') {
+        showItemPopup(item, ref.current!);
+      }
+    },
+  });
+
+  // Close the popup if this component is unmounted
+  useEffect(
+    () => () => {
+      if (showItemPopup$.getCurrentValue()?.item?.index === item.index) {
+        hideItemPopup();
+      }
+    },
+    [item.index],
+  );
+
+  return (
+    <button
+      type="button"
+      ref={ref}
+      className={styles.itemPickerItem}
+      aria-keyshortcuts="i"
+      {...mergeProps(pressProps, longPressProps, keyboardProps)}
+    >
+      <ConnectedInventoryItem
+        item={item}
+        // don't show the selected Super ability on subclasses in the item picker because the active Super
+        // ability is never relevant in the context that item picker is used
+        hideSelectedSuper
+      />
+      {item.bucket.hash === BucketHashes.Subclass && (
+        <ClassIcon classType={item.classType} className={styles.classIcon} />
+      )}
+    </button>
+  );
+}

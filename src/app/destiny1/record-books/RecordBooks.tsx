@@ -1,53 +1,27 @@
-import React from 'react';
-import { t } from 'app/i18next-t';
-import clsx from 'clsx';
-import CollapsibleTitle from '../../dim-ui/CollapsibleTitle';
-import { D1ManifestDefinitions } from '../d1-definitions';
-import _ from 'lodash';
-import { count } from '../../utils/util';
-import { setSetting } from '../../settings/actions';
-import { D1Store } from '../../inventory/store-types';
-import { storesSelector } from '../../inventory/selectors';
-import { RootState } from 'app/store/types';
-import { connect } from 'react-redux';
-import { D1StoresService } from '../../inventory/d1-stores';
-import { refresh$ } from '../../shell/refresh';
-import BungieImage, { bungieBackgroundStyle } from '../../dim-ui/BungieImage';
-import Objective from '../../progress/Objective';
-import { DestinyAccount } from '../../accounts/destiny-account';
-import { Subscriptions } from '../../utils/rx-utils';
-import './record-books.scss';
-import { settingsSelector } from 'app/settings/reducer';
 import ShowPageLoading from 'app/dim-ui/ShowPageLoading';
-
-interface ProvidedProps {
-  account: DestinyAccount;
-}
-
-interface StoreProps {
-  hideCompletedRecords: boolean;
-  stores: D1Store[];
-  defs?: D1ManifestDefinitions;
-}
-
-const mapDispatchToProps = {
-  setSetting,
-};
-type DispatchProps = typeof mapDispatchToProps;
-
-function mapStateToProps(state: RootState): StoreProps {
-  const settings = settingsSelector(state);
-  return {
-    hideCompletedRecords: settings.hideCompletedRecords,
-    stores: storesSelector(state) as D1Store[],
-    defs: state.manifest.d1Manifest,
-  };
-}
-
-type Props = ProvidedProps & StoreProps & DispatchProps;
+import Switch from 'app/dim-ui/Switch';
+import { t } from 'app/i18next-t';
+import { useLoadStores } from 'app/inventory/store/hooks';
+import { useD1Definitions } from 'app/manifest/selectors';
+import { useSetting } from 'app/settings/hooks';
+import { count, sumBy } from 'app/utils/collections';
+import { chainComparator, compareBy } from 'app/utils/comparators';
+import { usePageTitle } from 'app/utils/hooks';
+import clsx from 'clsx';
+import { keyBy } from 'es-toolkit';
+import { useSelector } from 'react-redux';
+import { DestinyAccount } from '../../accounts/destiny-account';
+import BungieImage, { bungieBackgroundStyle } from '../../dim-ui/BungieImage';
+import CollapsibleTitle from '../../dim-ui/CollapsibleTitle';
+import { storesSelector } from '../../inventory/selectors';
+import { D1Store } from '../../inventory/store-types';
+import Objective from '../../progress/Objective';
+import { D1ManifestDefinitions } from '../d1-definitions';
+import { D1ObjectiveProgress, D1RecordBook, D1RecordComponent } from '../d1-manifest-types';
+import * as styles from './RecordBooks.m.scss';
 
 interface RecordBook {
-  hash: string;
+  hash: number;
   name: string;
   recordCount: number;
   completedCount: number;
@@ -65,144 +39,33 @@ interface RecordBookPage {
   name: string;
   description: string;
   rewardsPage: boolean;
-  records: any[];
+  records: {
+    hash: number;
+    complete: boolean;
+    icon: string;
+    name: string;
+    description: string;
+    objectives: D1ObjectiveProgress[];
+  }[];
   complete: boolean;
   completedCount: number;
 }
 
-class RecordBooks extends React.Component<Props> {
-  private subscriptions = new Subscriptions();
+export default function RecordBooks({ account }: { account: DestinyAccount }) {
+  usePageTitle(t('RecordBooks.RecordBooks'));
+  const defs = useD1Definitions();
+  const stores = useSelector(storesSelector) as D1Store[];
+  const [hideCompletedRecords, setHideCompletedRecords] = useSetting('hideCompletedRecords');
 
-  componentDidMount() {
-    D1StoresService.getStoresStream(this.props.account);
-    this.subscriptions.add(
-      refresh$.subscribe(() => {
-        D1StoresService.reloadStores();
-      })
-    );
+  const storesLoaded = useLoadStores(account);
+  if (!defs || !storesLoaded) {
+    return <ShowPageLoading message={t('Loading.Profile')} />;
   }
 
-  componentWillUnmount() {
-    this.subscriptions.unsubscribe();
-  }
-
-  render() {
-    const { defs, stores, hideCompletedRecords } = this.props;
-
-    if (!defs || !stores.length) {
-      return <ShowPageLoading message={t('Loading.Profile')} />;
-    }
-
-    const rawRecordBooks = stores[0].advisors.recordBooks;
-    const recordBooks = _.sortBy(
-      _.map(rawRecordBooks, (rb) => this.processRecordBook(defs, rb)),
-      (rb) => [rb.complete, new Date(rb.startDate).getTime()]
-    );
-
-    return (
-      <div
-        className={clsx('record-books', 'dim-page', {
-          'hide-complete': hideCompletedRecords,
-        })}
-      >
-        <h1>
-          <div className="hide-completed">
-            <label>
-              <input
-                type="checkbox"
-                checked={hideCompletedRecords}
-                onChange={this.hideCompletedRecordsChanged}
-              />
-              <span>{t('RecordBooks.HideCompleted')}</span>
-            </label>
-          </div>
-        </h1>
-
-        {recordBooks.map((book) => (
-          <CollapsibleTitle
-            key={book.hash}
-            sectionId={'rb-' + book.hash}
-            title={
-              <>
-                <BungieImage src={book.icon} className="book-icon" /> {book.name}
-              </>
-            }
-            extra={
-              <span className="record-book-completion">
-                {book.completedCount} / {book.recordCount}
-              </span>
-            }
-          >
-            <div className="record-book">
-              {book.pages.map(
-                (page) =>
-                  !page.rewardsPage && (
-                    <div
-                      key={page.id}
-                      className={clsx('record-book-page', { complete: page.complete })}
-                    >
-                      <CollapsibleTitle
-                        sectionId={'rbpage-' + page.id}
-                        title={<span className="record-book-page-title">{page.name}</span>}
-                        extra={
-                          <span className="record-book-completion">
-                            {page.completedCount} / {page.records.length}
-                          </span>
-                        }
-                      >
-                        <p>{page.description}</p>
-
-                        {page.records.length && (
-                          <div className="record-page-records">
-                            {page.records.map((record) => (
-                              <div
-                                key={record.hash}
-                                className={clsx('record', { complete: record.complete })}
-                              >
-                                <div
-                                  className="record-icon"
-                                  style={bungieBackgroundStyle(record.icon)}
-                                />
-                                <div className="record-info">
-                                  <h3>{record.name}</h3>
-                                  <p>{record.description}</p>
-                                  {record.objectives.map((objective) => (
-                                    <Objective
-                                      key={objective.objectiveHash}
-                                      defs={defs}
-                                      objective={objective}
-                                    />
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </CollapsibleTitle>
-                    </div>
-                  )
-              )}
-            </div>
-          </CollapsibleTitle>
-        ))}
-      </div>
-    );
-  }
-
-  private hideCompletedRecordsChanged = (e: React.ChangeEvent<HTMLInputElement>) => {
-    this.props.setSetting('hideCompletedRecords', e.currentTarget.checked);
-  };
-
-  // TODO: Ideally there would be an Advisors service that would
-  // lazily load advisor info, and we'd get that info
-  // here. Unfortunately we're also using advisor info to populate
-  // extra info in Trials cards in Store service, and it's more
-  // efficient to just fish the info out of there.
-
-  private processRecordBook = (defs: D1ManifestDefinitions, rawRecordBook): RecordBook => {
-    // TODO: rewards are in "spotlights"
-    // TODO: rank
-
+  const processRecordBook = (
+    defs: D1ManifestDefinitions,
+    rawRecordBook: D1RecordBook,
+  ): RecordBook => {
     const recordBookDef = defs.RecordBook.get(rawRecordBook.bookHash);
     const recordBook = {
       hash: rawRecordBook.bookHash,
@@ -218,8 +81,20 @@ class RecordBooks extends React.Component<Props> {
       percentComplete: undefined as number | undefined,
     };
 
-    const records = Object.values(rawRecordBook.records).map((r) => this.processRecord(defs, r));
-    const recordByHash = _.keyBy(records, (r) => r.hash);
+    const processRecord = (defs: D1ManifestDefinitions, record: D1RecordComponent) => {
+      const recordDef = defs.Record.get(record.recordHash);
+      return {
+        hash: record.recordHash,
+        icon: recordDef.icon,
+        description: recordDef.description,
+        name: recordDef.displayName,
+        objectives: record.objectives,
+        complete: record.objectives.every((o) => o.isComplete),
+      };
+    };
+
+    const records = Object.values(rawRecordBook.records).map((r) => processRecord(defs, r));
+    const recordByHash = keyBy(records, (r) => r.hash);
 
     let i = 0;
     recordBook.pages = recordBookDef.pages.map((page) => {
@@ -229,9 +104,6 @@ class RecordBooks extends React.Component<Props> {
         description: page.displayDescription,
         rewardsPage: page.displayStyle === 1,
         records: page.records.map((r) => recordByHash[r.recordHash]),
-        // rewards - map to items!
-        // ItemFactory.processItems({ id: null }
-        // may have to extract store service bits...
         complete: false,
         completedCount: 0,
       };
@@ -250,7 +122,7 @@ class RecordBooks extends React.Component<Props> {
       rawRecordBook.progress = rawRecordBook.progression;
       rawRecordBook.percentComplete =
         rawRecordBook.progress.currentProgress /
-        _.sumBy(rawRecordBook.progress.steps, (s: any) => s.progressTotal);
+        sumBy(rawRecordBook.progress.steps, (s) => s.progressTotal);
     } else {
       recordBook.percentComplete = count(records, (r) => r.complete) / records.length;
     }
@@ -260,18 +132,98 @@ class RecordBooks extends React.Component<Props> {
     return recordBook;
   };
 
-  private processRecord = (defs: D1ManifestDefinitions, record) => {
-    const recordDef = defs.Record.get(record.recordHash);
+  const rawRecordBooks = stores[0].advisors.recordBooks;
+  const recordBooks = Object.values(rawRecordBooks ?? {})
+    .map((rb) => processRecordBook(defs, rb))
+    .sort(
+      chainComparator(
+        compareBy((rb) => rb.complete),
+        compareBy((rb) => new Date(rb.startDate).getTime()),
+      ),
+    );
 
-    return {
-      hash: record.recordHash,
-      icon: recordDef.icon,
-      description: recordDef.description,
-      name: recordDef.displayName,
-      objectives: record.objectives,
-      complete: record.objectives.every((o) => o.isComplete),
-    };
-  };
+  return (
+    <div className={styles.recordBooks}>
+      <div className={styles.hideCompleted}>
+        <label>
+          <Switch
+            checked={hideCompletedRecords}
+            onChange={setHideCompletedRecords}
+            name="hideCompleted"
+          />
+          <span>{t('RecordBooks.HideCompleted')}</span>
+        </label>
+      </div>
+
+      {recordBooks.map((book) => (
+        <CollapsibleTitle
+          key={book.hash}
+          sectionId={`rb-${book.hash}`}
+          title={
+            <>
+              <BungieImage src={book.icon} className={styles.bookIcon} /> {book.name}
+            </>
+          }
+          extra={
+            <>
+              {book.completedCount} / {book.recordCount}
+            </>
+          }
+        >
+          <div className={styles.recordBook}>
+            {book.pages.map(
+              (page) =>
+                !page.rewardsPage &&
+                !(page.complete && hideCompletedRecords) && (
+                  <div key={page.id} className={styles.recordBookPage}>
+                    <CollapsibleTitle
+                      sectionId={`rbpage-${page.id}`}
+                      title={page.name}
+                      extra={
+                        <>
+                          {page.completedCount} / {page.records.length}
+                        </>
+                      }
+                    >
+                      <p>{page.description}</p>
+
+                      {page.records.length > 0 && (
+                        <div className={styles.records}>
+                          {page.records.map(
+                            (record) =>
+                              !(record.complete && hideCompletedRecords) && (
+                                <div
+                                  key={record.hash}
+                                  className={clsx(styles.record, {
+                                    [styles.complete]: record.complete,
+                                  })}
+                                >
+                                  <div
+                                    className={styles.recordIcon}
+                                    style={bungieBackgroundStyle(record.icon)}
+                                  />
+                                  <div className={styles.recordInfo}>
+                                    <h3>{record.name}</h3>
+                                    <p>{record.description}</p>
+                                    {record.objectives.map((objective) => (
+                                      <Objective
+                                        key={objective.objectiveHash}
+                                        objective={objective}
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                              ),
+                          )}
+                        </div>
+                      )}
+                    </CollapsibleTitle>
+                  </div>
+                ),
+            )}
+          </div>
+        </CollapsibleTitle>
+      ))}
+    </div>
+  );
 }
-
-export default connect<StoreProps, DispatchProps>(mapStateToProps, mapDispatchToProps)(RecordBooks);

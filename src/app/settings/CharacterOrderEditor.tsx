@@ -1,10 +1,14 @@
-import React from 'react';
-import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
-import clsx from 'clsx';
+import { DimStore } from 'app/inventory/store-types';
+import { emptyArray } from 'app/utils/empty';
+import { MotionStyle, Reorder, TargetAndTransition } from 'motion/react';
+import { useState } from 'react';
 import { useSelector } from 'react-redux';
 import { sortedStoresSelector } from '../inventory/selectors';
-import './CharacterOrderEditor.scss';
 import { AppIcon, refreshIcon } from '../shell/icons';
+import * as styles from './CharacterOrderEditor.m.scss';
+
+const regularStyle: MotionStyle = { cursor: 'grab' };
+const draggingStyle: TargetAndTransition = { cursor: 'grabbing' };
 
 /**
  * An editor for character orders, with drag and drop.
@@ -12,79 +16,60 @@ import { AppIcon, refreshIcon } from '../shell/icons';
 export default function CharacterOrderEditor({
   onSortOrderChanged,
 }: {
-  onSortOrderChanged(order: string[]): void;
+  onSortOrderChanged: (order: string[]) => void;
 }) {
   const characters = useSelector(sortedStoresSelector);
+  const nonVaultCharacters = characters.filter((c) => !c.isVault);
 
-  const moveItem = (oldIndex: number, newIndex: number) => {
-    newIndex = Math.min(characters.length, Math.max(newIndex, 0));
-    const order = reorder(
-      characters.filter((c) => !c.isVault).map((c) => c.id),
-      oldIndex,
-      newIndex
-    );
-    onSortOrderChanged(order);
+  const [draggingOrder, setDraggingOrder] = useState<DimStore[]>(emptyArray);
+
+  const handleReorder = (newOrder: typeof nonVaultCharacters) => {
+    setDraggingOrder(newOrder);
   };
 
-  const onDragEnd = (result: DropResult) => {
-    // dropped outside the list
-    if (!result.destination) {
-      return;
-    }
-
-    moveItem(result.source.index, result.destination.index);
+  const handleDragEnd = () => {
+    onSortOrderChanged(draggingOrder.map((c) => c.id));
+    setDraggingOrder(emptyArray());
   };
 
   if (!characters.length) {
     return (
-      <div className="character-order-editor">
+      <div className={styles.editor}>
         <AppIcon icon={refreshIcon} spinning={true} /> Loading characters...
       </div>
     );
   }
 
+  // When dragging, show the order in state, then switch back to the one from props
+  const displayCharacters = draggingOrder.length > 0 ? draggingOrder : nonVaultCharacters;
+
   return (
-    <DragDropContext onDragEnd={onDragEnd}>
-      <Droppable droppableId="characters" direction="horizontal">
-        {(provided) => (
-          <div className="character-order-editor" ref={provided.innerRef}>
-            {characters
-              .filter((c) => !c.isVault)
-              .map((character, index) => (
-                <Draggable draggableId={character.id} index={index} key={character.id}>
-                  {(provided, snapshot) => (
-                    <div
-                      className={clsx('character-order-editor-item', {
-                        'is-dragging': snapshot.isDragging,
-                      })}
-                      ref={provided.innerRef}
-                      {...provided.draggableProps}
-                      {...provided.dragHandleProps}
-                    >
-                      <div className="sortable-character">
-                        <img src={character.icon} />
-                        <div className="character-text">
-                          <span className="power-level">{character.powerLevel}</span>{' '}
-                          {character.className}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </Draggable>
-              ))}
-            {provided.placeholder}
+    <Reorder.Group
+      axis="x"
+      values={nonVaultCharacters}
+      onReorder={handleReorder}
+      className={styles.editor}
+      as="div"
+    >
+      {displayCharacters.map((character) => (
+        <Reorder.Item
+          key={character.id}
+          value={character}
+          className={styles.item}
+          style={regularStyle}
+          whileDrag={draggingStyle}
+          onDragEnd={handleDragEnd}
+          as="div"
+        >
+          <div className={styles.character}>
+            <img src={character.icon} />
+            <div>
+              <span className={styles.powerLevel}>{character.powerLevel}</span>{' '}
+              {character.className}
+            </div>
           </div>
-        )}
-      </Droppable>
-    </DragDropContext>
+        </Reorder.Item>
+      ))}
+    </Reorder.Group>
   );
-}
-
-// a little function to help us with reordering the result
-function reorder<T>(list: T[], startIndex: number, endIndex: number): T[] {
-  const result = Array.from(list);
-  const [removed] = result.splice(startIndex, 1);
-  result.splice(endIndex, 0, removed);
-
-  return result;
 }

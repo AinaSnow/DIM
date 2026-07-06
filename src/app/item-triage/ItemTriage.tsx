@@ -1,416 +1,481 @@
-import React, { useEffect, useState } from 'react';
-import { D2Item } from '../inventory/item-types';
-import { DestinyClass } from 'bungie-api-ts/destiny2';
-import SpecialtyModSlotIcon, {
-  getArmorSlotSpecificModSocketDisplayName,
-  ArmorSlotSpecificModSocketIcon,
-} from 'app/dim-ui/SpecialtyModSlotIcon';
-import ElementIcon from 'app/inventory/ElementIcon';
-import styles from './ItemTriage.m.scss';
-import _ from 'lodash';
-import { KeepJunkDial, getValueColors } from './ValueDial';
+import { currentAccountSelector } from 'app/accounts/selectors';
+import { StoreIcon } from 'app/character-tile/StoreIcon';
+import { compareFilteredItems } from 'app/compare/actions';
+import { collapsedSelector, settingSelector } from 'app/dim-api/selectors';
 import BungieImage from 'app/dim-ui/BungieImage';
-import { getSpecialtySocketMetadata } from 'app/utils/item-utils';
-import { getAllItems } from 'app/inventory/stores-helpers';
-import { classIcons } from 'app/inventory/StoreBucket';
-import AppIcon from 'app/shell/icons/AppIcon';
-import { getWeaponArchetype, getWeaponArchetypeSocket } from 'app/dim-ui/WeaponArchetype';
-import PlugTooltip from 'app/item-popup/PlugTooltip';
-import PressTip from 'app/dim-ui/PressTip';
-import { getWeaponSvgIcon } from 'app/dim-ui/svgs/itemCategory';
+import ClassIcon from 'app/dim-ui/ClassIcon';
+import CollapsibleTitle from 'app/dim-ui/CollapsibleTitle';
+import { ExpandableTextBlock } from 'app/dim-ui/ExpandableTextBlock';
+import { PressTip } from 'app/dim-ui/PressTip';
+import { SetFilterButton } from 'app/dim-ui/SetFilterButton';
+import * as filterButtonStyles from 'app/dim-ui/SetFilterButton.m.scss';
+import ColorDestinySymbols from 'app/dim-ui/destiny-symbols/ColorDestinySymbols';
+import BucketIcon from 'app/dim-ui/svgs/BucketIcon';
+import { I18nKey, t, tl } from 'app/i18next-t';
+import { allItemsSelector, storesSelector } from 'app/inventory/selectors';
+import { hideItemPopup } from 'app/item-popup/item-popup';
+import { editLoadout } from 'app/loadout-drawer/loadout-events';
+import InGameLoadoutIcon from 'app/loadout/ingame/InGameLoadoutIcon';
+import { isInGameLoadout } from 'app/loadout/loadout-types';
+import { loadoutsByItemSelector } from 'app/loadout/selectors';
+import { filterFactorySelector } from 'app/search/items/item-search-filter';
+import { loadoutToSearchString } from 'app/search/items/search-filters/loadouts';
+import { AppIcon, compareIcon, editIcon } from 'app/shell/icons';
+import { minOf } from 'app/utils/collections';
+import WishListPerkThumb from 'app/wishlists/WishListPerkThumb';
+import { wishListSelector } from 'app/wishlists/selectors';
 import clsx from 'clsx';
-import { settingsSelector } from 'app/settings/reducer';
-import { RootState } from 'app/store/types';
-import { useSelector } from 'react-redux';
-import { StatHashListsKeyedByDestinyClass, StatTotalToggle } from 'app/dim-ui/CustomStatTotal';
+import { BucketHashes } from 'data/d2/generated-enums';
+import helmet from 'destiny-icons/armor_types/helmet.svg';
+import { maxBy } from 'es-toolkit';
+import React, { JSX } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { Link } from 'react-router';
+import { DimItem } from '../inventory/item-types';
+import * as popupStyles from '../item-popup/ItemDescription.m.scss'; // eslint-disable-line css-modules/no-unused-class
+import * as styles from './ItemTriage.m.scss';
+import { Factor } from './triage-factors';
+import {
+  getBetterWorseItems,
+  getNotableStats,
+  getSimilarItems,
+  getValueColors,
+} from './triage-utils';
 
-/** a factor of interest */
-interface Factor {
-  id: string;
-  /** bother checking this factor, if the seed item returns truthy */
-  runIf(item: D2Item): any;
-  render(item: D2Item): React.ReactElement;
-  value(item: D2Item): string | number;
+/** whether an item's popup should contain the triage tab */
+export function doShowTriage(item: DimItem) {
+  return (
+    item.destinyVersion === 2 &&
+    (item.bucket.inArmor ||
+      (item.bucket.inWeapons &&
+        item.bucket.hash !== BucketHashes.Artifacts &&
+        item.bucket.hash !== BucketHashes.Subclass))
+  );
 }
 
-// factors someone might value in an item, like its mod slot or its element
-const itemFactors: Record<string, Factor> = {
-  class: {
-    id: 'class',
-    runIf: () => true,
-    render: (item) => (
-      <PressTip elementType="span" tooltip={item.classTypeNameLocalized}>
-        <AppIcon icon={classIcons[item.classType]} className={styles.classIcon} />
-      </PressTip>
-    ),
-    value: (item) => item.classType.toString(),
-  },
-  name: {
-    id: 'name',
-    runIf: () => true,
-    render: (item) => (
-      <>
-        <BungieImage className={styles.inlineIcon} src={item.icon} /> {item.name}
-      </>
-    ),
-    value: (item) => item.name,
-  },
-  element: {
-    id: 'element',
-    runIf: (item) => item.element,
-    render: (item) => (
-      <PressTip elementType="span" tooltip={item.element?.displayProperties.name}>
-        <ElementIcon className={clsx(styles.inlineIcon, styles.smaller)} element={item.element} />
-      </PressTip>
-    ),
-    value: (item) => item.element?.displayProperties.name ?? '',
-  },
-  weaponType: {
-    id: 'weaponType',
-    runIf: (item) => item.bucket.inWeapons,
-    render: (item) => {
-      const weaponIcon = getWeaponSvgIcon(item);
-      return weaponIcon ? (
-        <PressTip elementType="span" tooltip={item.typeName}>
-          <img
-            className={clsx(styles.inlineIcon, styles.smaller, styles.weaponSvg)}
-            src={getWeaponSvgIcon(item)}
-          />
-        </PressTip>
-      ) : (
-        <>{item.typeName}</>
-      );
-    },
-    value: (item) => item.typeName ?? '',
-  },
-  specialtySocket: {
-    id: 'specialtySocket',
-    runIf: getSpecialtySocketMetadata,
-    render: (item) => (
-      <SpecialtyModSlotIcon className={styles.inlineIcon} item={item} lowRes={true} />
-    ),
-    value: (item) => getSpecialtySocketMetadata(item)?.tag ?? '',
-  },
-  armorSlot: {
-    id: 'armorSlot',
-    runIf: getArmorSlotSpecificModSocketDisplayName,
-    render: (item) => (
-      <ArmorSlotSpecificModSocketIcon className={styles.inlineIcon} item={item} lowRes={true} />
-    ),
-    value: getArmorSlotSpecificModSocketDisplayName,
-  },
-  archetype: {
-    id: 'archetype',
-    runIf: (item) => item.bucket.inWeapons,
-    render: (item) => {
-      const archetypeSocket = getWeaponArchetypeSocket(item);
-      return (
-        <>
-          {archetypeSocket?.plugged && (
-            <PressTip
-              elementType="span"
-              tooltip={<PlugTooltip item={item} plug={archetypeSocket.plugged} />}
-            >
-              <BungieImage
-                className={styles.inlineIcon}
-                src={archetypeSocket.plugged.plugDef.displayProperties.icon}
-              />
-            </PressTip>
-          )}
-        </>
-      );
-    },
-    value: (item) => getWeaponArchetype(item)?.hash ?? 'unknown',
-  },
-};
-
-// which factors to check for which buckets
-const factorCombos = {
-  Weapons: [
-    [itemFactors.element, itemFactors.weaponType],
-    [itemFactors.archetype, itemFactors.weaponType],
-  ],
-  Armor: [
-    [itemFactors.class, itemFactors.element, itemFactors.specialtySocket, itemFactors.armorSlot],
-    [itemFactors.class, itemFactors.element, itemFactors.specialtySocket],
-    [itemFactors.name],
-  ],
-  General: [[itemFactors.element]],
-};
-type factorComboCategory = keyof typeof factorCombos;
-const factorComboCategories = Object.keys(factorCombos);
-
-export function ItemTriage({ item }: { item: D2Item }) {
-  const [notableStats, setNotableStats] = useState<ReturnType<typeof getNotableStats>>();
-  const [itemFactors, setItemFactors] = useState<ReturnType<typeof getSimilarItems>>();
-
-  const customTotalStatsByClass = useSelector<RootState, StatHashListsKeyedByDestinyClass>(
-    (state) => settingsSelector(state).customTotalStatsByClass
-  );
-
-  // because of the ability to swipe between item popup tabs,
-  // all tabs in a popup are rendered when the item popup is up.
-  // this actually processes items really fast, and the item popup appearance animation probably
-  // takes longer than the calculation, but every millisecond counts, so,
-  // to keep the UI snappy, expecially since this tab may not even be viewed,
-  // we put calculations in a useEffect and fill in the numbers later
-  useEffect(() => {
-    if (item.bucket.inArmor) {
-      setNotableStats(getNotableStats(item, customTotalStatsByClass));
-    }
-    setItemFactors(getSimilarItems(item));
-  }, [item, customTotalStatsByClass]);
-
-  // this lets us lay out the factor categories before we have their calculated numbers
-  // useEffect fills those in later for us
-  // we rely on factorCombosLabels and itemFactors having the same number of elements,
-  // because they are check the same factors
-  const factorCombosLabels = getItemFactorComboDisplays(item);
+/**
+ * the content of the upper "tab" that leads to ItemTriage when clicked.
+ *
+ * this is dependent on item and context:
+ * when the triage pane ISN'T displayed, it will display
+ * some at-a-glance info about what you'll find in the triage pane
+ */
+export function TriageTabToggle({ tabActive, item }: { tabActive: boolean; item: DimItem }) {
+  const wishlistRoll = useSelector(wishListSelector(item));
+  const loadoutsByItem = useSelector(loadoutsByItemSelector);
+  const isInLoadout = Boolean(loadoutsByItem[item.id]);
 
   return (
-    <div className={styles.itemTriagePane}>
-      <div className={styles.triageTable}>
-        <div className={`${styles.factorCombo} ${styles.header}`}>This item</div>
-        <div className={`${styles.comboCount} ${styles.header}`}>Similar items</div>
-        <div className={`${styles.keepMeter} ${styles.header}`} />
-        <div className={styles.headerDivider} />
-        {factorCombosLabels.length > 0 &&
-          factorCombosLabels.map((comboDisplay, i) => (
-            <React.Fragment key={i}>
-              {comboDisplay}
-              <div className={styles.comboCount}>{itemFactors?.[i].count}</div>
-              <div className={styles.keepMeter}>
-                {itemFactors && <KeepJunkDial value={itemFactors[i].quality} />}
-              </div>
-            </React.Fragment>
-          ))}
-      </div>
-      {notableStats && (
-        <div className={styles.triageTable}>
-          <div className={`${styles.bestStat} ${styles.header}`}>
-            Best item (
-            <ArmorSlotSpecificModSocketIcon
-              className={styles.inlineIcon}
-              item={item}
-              lowRes={true}
-            />
-            )
-          </div>
-          <div className={`${styles.thisStat} ${styles.header}`}>This item</div>
-          <div className={`${styles.keepMeter} ${styles.header}`} />
-          <div className={styles.headerDivider} />
-
-          {notableStats.notableStats?.map(({ best, quality, percent, stat }) => (
-            <React.Fragment key={stat.statHash}>
-              <div className={styles.bestStat}>
-                <span className={styles.statIconWrapper}>
-                  {(stat.displayProperties.icon && (
-                    <BungieImage
-                      key={stat.statHash}
-                      className={clsx(styles.inlineIcon, styles.smaller)}
-                      src={stat.displayProperties.icon}
-                    />
-                  )) ||
-                    ' '}
-                </span>
-                <span className={styles.statValue}>{best}</span>{' '}
-                <span className={styles.dimmed}>{stat.displayProperties.name}</span>
-              </div>
-              <div className={styles.thisStat}>
-                <span className={styles.statValue}>{stat.base}</span> (
-                <span style={{ color: getValueColors(quality)[1] }}>{percent}%</span>)
-              </div>
-              <div className={styles.keepMeter}>
-                <KeepJunkDial value={quality} />
-              </div>
-            </React.Fragment>
-          ))}
-          {item.bucket.inArmor && (
-            <>
-              <div className={styles.bestStat}>
-                <span className={styles.statIconWrapper}> </span>
-                <span className={styles.statValue}>{notableStats.customTotalMax.best}</span>{' '}
-                <StatTotalToggle forClass={item.classType} className={styles.inlineBlock} />
-              </div>
-              <div className={styles.thisStat}>
-                <span className={styles.statValue}>{notableStats.customTotalMax.stat}</span> (
-                <span style={{ color: getValueColors(notableStats.customTotalMax.quality)[1] }}>
-                  {notableStats.customTotalMax.percent}%
-                </span>
-                )
-              </div>
-              <div className={styles.keepMeter}>
-                <KeepJunkDial value={notableStats.customTotalMax.quality} />
-              </div>
-            </>
+    <span className={styles.popupTabTitle}>
+      {t('MovePopup.TriageTab')}
+      {!tabActive && (
+        <>
+          {wishlistRoll && (
+            <WishListPerkThumb wishListRoll={wishlistRoll} className={styles.thumbsUp} />
           )}
-        </div>
+          {isInLoadout && (
+            <img title={t('Triage.InLoadouts')} src={helmet} className={styles.inLoadout} />
+          )}
+        </>
+      )}
+    </span>
+  );
+}
+
+export function ItemTriage({ item, id }: { item: DimItem; id: string }) {
+  return (
+    <div id={id} role="tabpanel" aria-labelledby={`${id}-tab`} className={styles.itemTriagePane}>
+      {item.wishListEnabled && <WishlistTriageSection item={item} />}
+      <LoadoutsTriageSection item={item} />
+      <SimilarItemsTriageSection item={item} />
+      {item.bucket.inArmor && (
+        <>
+          <ArmorStatsTriageSection item={item} />
+          <BetterItemsTriageSection item={item} />
+        </>
       )}
     </div>
   );
 }
 
-/**
- * for all items relevant for comparison to the seed item, processes them into a Record,
- * keyed by item factor combination i.e. "arcwarlockopulent"
- * with values representing how many of that type you own
- */
-function collectRelevantItemFactors(exampleItem: D2Item) {
-  const combinationCounts: { [key: string]: number } = {};
-  getAllItems(exampleItem.getStoresService().getStores())
-    .filter(
-      (i) =>
-        // compare only items with the same canonical bucket.
-        i.bucket.sort === exampleItem.bucket.sort &&
-        // accept anything if seed item is class unknown
-        (exampleItem.classType === DestinyClass.Unknown ||
-          // or accept individual items if they're matching or unknown.
-          i.classType === DestinyClass.Unknown ||
-          i.classType === exampleItem.classType)
-    )
-    .forEach((item: D2Item) => {
-      factorCombos[exampleItem.bucket.sort as factorComboCategory].forEach((factorCombo) => {
-        const combination = applyFactorCombo(item, factorCombo);
-        combinationCounts[combination] = (combinationCounts[combination] ?? 0) + 1;
-      });
-    });
-  return combinationCounts;
-}
-function getSimilarItems(exampleItem: D2Item) {
-  if (!factorComboCategories.includes(exampleItem.bucket.sort ?? '')) {
-    return [];
-  }
-  const relevantFactors = collectRelevantItemFactors(exampleItem);
-  return factorCombos[exampleItem.bucket.sort as factorComboCategory]
-    .filter((factorCombo) => factorCombo.every((factor) => factor.runIf(exampleItem)))
-    .map((factorCombo) => {
-      const count = relevantFactors[applyFactorCombo(exampleItem, factorCombo)] - 1;
-      return {
-        /** how many similar items you have including this one */
-        count,
-        /** quality is a number from 0 to 100 representing keepworthiness */
-        quality: Math.max(0, 100 - count * (100 / 3)),
-      };
-    });
-}
-function getItemFactorComboDisplays(exampleItem: D2Item) {
-  if (!factorComboCategories.includes(exampleItem.bucket.sort ?? '')) {
-    return [];
-  }
-  return factorCombos[exampleItem.bucket.sort as factorComboCategory]
-    .filter((factorCombo) => factorCombo.every((factor) => factor.runIf(exampleItem)))
-    .map((factorCombo) => renderFactorCombo(exampleItem, factorCombo));
+function WishlistTriageSection({ item }: { item: DimItem }) {
+  const wishlistItem = useSelector(wishListSelector(item));
+  const disabled = !wishlistItem;
+  const collapsedSetting = useSelector(collapsedSelector('triage-wishlist'));
+  const collapsed = disabled || collapsedSetting;
+
+  return (
+    <CollapsibleTitle
+      title={t('WishListRoll.Header')}
+      sectionId="triage-wishlist"
+      defaultCollapsed={false}
+      className={styles.collapseTitle}
+      extra={wishlistItem ? <WishListPerkThumb wishListRoll={wishlistItem} /> : '–'}
+      disabled={disabled}
+    >
+      {wishlistItem && Boolean(wishlistItem?.notes?.length) && (
+        <ExpandableTextBlock
+          linesWhenClosed={3}
+          className={popupStyles.description}
+          alreadyOpen={collapsed}
+        >
+          <span className={popupStyles.secondaryText}>{wishlistItem.notes}</span>
+        </ExpandableTextBlock>
+      )}
+    </CollapsibleTitle>
+  );
 }
 
-/**
- * given a seed item (one that all items will be compared to),
- * derives all items from stores, then gathers stat maxes for items worth comparing
- */
-function collectRelevantStatMaxes(exampleItem: D2Item, customStatTotalHashes: number[]) {
-  // highest values found in relevant items, keyed by stat hash
-  const statMaxes: Record<number | string, number> = { custom: 0 };
-  getAllItems(exampleItem.getStoresService().getStores())
-    .filter(
-      (i) =>
-        // compare only items with the same canonical bucket.
-        i.bucket.hash === exampleItem.bucket.hash &&
-        // accept anything if seed item is class unknown
-        (exampleItem.classType === DestinyClass.Unknown ||
-          // or accept individual items if they're matching or unknown.
-          i.classType === DestinyClass.Unknown ||
-          i.classType === exampleItem.classType) &&
-        // accept any tier if seed item is exotic, or filter out exotics if this item isn't
-        (exampleItem.tier === 'Exotic' || i.tier !== 'Exotic')
-    )
-    .forEach((item) => {
-      if (item.stats) {
-        let thisItemCustomStatTotal = 0;
-        item.stats.forEach((stat) => {
-          const bestStatSoFar: number =
-            statMaxes[stat.statHash] ?? (stat.smallerIsBetter ? 9999999 : -9999999);
-          const newBestStat = (stat.smallerIsBetter ? Math.min : Math.max)(
-            bestStatSoFar,
-            stat.base
-          );
-          statMaxes[stat.statHash] = newBestStat;
-
-          if (customStatTotalHashes.includes(stat.statHash)) {
-            thisItemCustomStatTotal += stat.base;
-          }
-        });
-        statMaxes['custom'] = Math.max(statMaxes['custom'], thisItemCustomStatTotal);
+function LoadoutsTriageSection({ item }: { item: DimItem }) {
+  const loadoutsByItem = useSelector(loadoutsByItemSelector);
+  const stores = useSelector(storesSelector);
+  const inLoadouts = loadoutsByItem[item.id] || [];
+  // We need to build an absolute path rather than a relative one because the loadout editor is mounted higher than the destiny routes.
+  const account = useSelector(currentAccountSelector);
+  return (
+    <CollapsibleTitle
+      title={t('Triage.InLoadouts')}
+      sectionId="triage-loadout"
+      defaultCollapsed={true}
+      className={styles.collapseTitle}
+      extra={
+        <span className={styles.factorCollapsedValue}>
+          {inLoadouts.length}
+          <img src={helmet} className={styles.inLoadout} />
+        </span>
       }
-    });
-  return statMaxes;
+      disabled={!inLoadouts.length}
+    >
+      <ul className={styles.loadoutList}>
+        {inLoadouts.map((l) => {
+          const loadout = l.loadout;
+          const isDimLoadout = !isInGameLoadout(loadout);
+          const character = isDimLoadout
+            ? undefined
+            : stores.find((s) => s.id === loadout.characterId);
+
+          return (
+            <li className={styles.loadoutRow} key={loadout.id}>
+              {isDimLoadout ? (
+                <ClassIcon classType={loadout.classType} className={styles.inlineIcon} />
+              ) : (
+                <>
+                  {character && (
+                    <span className={styles.charIcon}>
+                      <StoreIcon useBackground store={character} />
+                    </span>
+                  )}
+                  <InGameLoadoutIcon loadout={loadout} />
+                  <span className={styles.loadoutNumber}>{loadout.index + 1}</span>
+                </>
+              )}
+              <ColorDestinySymbols text={loadout.name} className={styles.loadoutName} />
+              <span className={styles.controls}>
+                {isInGameLoadout(loadout) ? (
+                  account && (
+                    <Link
+                      className={filterButtonStyles.setFilterButton}
+                      to={`/${account.membershipId}/d${account.destinyVersion}/loadouts`}
+                      state={{ inGameLoadout: loadout }}
+                    >
+                      <AppIcon icon={editIcon} />
+                    </Link>
+                  )
+                ) : (
+                  <a
+                    onClick={() => {
+                      editLoadout(loadout, item.owner);
+                      hideItemPopup();
+                    }}
+                    title={t('Loadouts.Edit')}
+                    className={filterButtonStyles.setFilterButton}
+                  >
+                    <AppIcon icon={editIcon} />
+                  </a>
+                )}
+                <SetFilterButton
+                  filter={
+                    isInGameLoadout(loadout)
+                      ? `inloadout:${loadout.id}`
+                      : loadoutToSearchString(loadout)
+                  }
+                />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </CollapsibleTitle>
+  );
 }
 
-// a stat is notable on seed item when it's at least this % of the best owned
-const notabilityThreshold = 0.8;
 /**
- * returns an entry for each notable stat found on the seed item
+ * we don't include this section if there's nothing "interesting" to share about this item
  */
-function getNotableStats(
-  exampleItem: D2Item,
-  customTotalStatsByClass: StatHashListsKeyedByDestinyClass
-) {
-  const customStatTotalHashes = customTotalStatsByClass[exampleItem.classType] ?? [];
-  const statMaxes = collectRelevantStatMaxes(exampleItem, customStatTotalHashes);
+function SimilarItemsTriageSection({ item }: { item: DimItem }) {
+  const filterFactory = useSelector(filterFactorySelector);
+  const allItems = useSelector(allItemsSelector);
+  const itemFactors = getSimilarItems(item, allItems, filterFactory);
 
-  const customTotal =
-    exampleItem.stats?.reduce(
-      (total, stat) => (customStatTotalHashes.includes(stat.statHash) ? total + stat.base : total),
-      0
-    ) ?? 0;
-  const customRatio = customTotal / statMaxes.custom || 0;
-  return {
-    notableStats: exampleItem.stats
-      ?.filter((stat) => stat.base / statMaxes[stat.statHash] >= notabilityThreshold)
-      .map((stat) => {
-        const best = statMaxes[stat.statHash];
-        const rawRatio = stat.base / best || 0;
+  // nothing interesting = no display
+  if (itemFactors.length === 0) {
+    return null;
+  }
 
-        return {
-          /** quality is a number from 0 to 100 representing keepworthiness */
-          quality: 100 - (10 - Math.floor(rawRatio * 10)) * (100 / 3),
-          /** seed item's copy of this stat */
-          stat,
-          /** best of this stat */
-          best,
-          /** whole # percentage of seed item's stat compared to the best of that stat */
-          percent: Math.floor(rawRatio * 100),
-        };
-      }),
-    customTotalMax: {
-      quality: 100 - (10 - Math.floor(customRatio * 10)) * (100 / 3),
-      stat: customTotal,
-      best: statMaxes.custom,
-      percent: Math.floor(customRatio * 100),
-    },
-  };
+  // separate section IDs allows separate settings saves
+  const sectionId = `${item.bucket.inArmor ? 'armor' : 'weapon'}-triage-itemcount`;
+
+  const fewestSimilar = minOf(itemFactors, (f) => f.count);
+  return (
+    <CollapsibleTitle
+      title={t('Triage.SimilarItems')}
+      sectionId={sectionId}
+      defaultCollapsed={false}
+      className={styles.collapseTitle}
+      extra={<span className={styles.factorCollapsedValue}>{fewestSimilar}</span>}
+      showExtraOnlyWhenCollapsed
+    >
+      <div className={styles.similarItemsTable}>
+        <div className={styles.header}>
+          <span>{t('Triage.ThisItem')}</span>
+          <span>{t('Triage.OwnedCount')}</span>
+        </div>
+        <div className={styles.headerDivider} />
+        {itemFactors.length > 0 &&
+          itemFactors.map(({ count, query, factorCombo, items }) => (
+            <div className={styles.tableRow} key={query}>
+              <FactorCombo exampleItem={item} factorCombo={factorCombo} />
+              <span className={styles.count}>{count}</span>
+              <span className={styles.controls}>
+                <StartCompareButton filter={query} items={items} initialItem={item} />
+                <SetFilterButton filter={query} />
+              </span>
+            </div>
+          ))}
+      </div>
+    </CollapsibleTitle>
+  );
 }
 
-/**
- * turns an array of factors into a string
- * i.e. "class2,elementVoid"
- * for factorCombo [class, element]
- * and an item that's a warlock void armor
- */
-function applyFactorCombo(item: D2Item, factorCombo: Factor[]) {
-  return factorCombo.map((factor) => factor.id + factor.value(item)).join();
-}
+const descriptionBulletPoints = {
+  worse: [tl('Triage.StatWorseArmorDesc'), tl('Triage.PerkWorseArmorDesc')],
+  worseStats: [tl('Triage.StatWorseArmorDesc'), tl('Triage.StatNotPerkArmorDesc')],
+  better: [tl('Triage.StatBetterArmorDesc'), tl('Triage.PerkBetterArmorDesc')],
+  betterStats: [tl('Triage.StatBetterArmorDesc'), tl('Triage.StatNotPerkArmorDesc')],
+} as const;
 
 /**
- * turns an array of factors into UI to represent this combination of factors
- * i.e. a warlock icon and a purple swirl,
- * for factorCombo [class, element]
- * and an exampleItem that's a warlock void armor
+ * we don't include this section if there's no strictly better or worse items
  */
-function renderFactorCombo(exampleItem: D2Item, factorCombo: Factor[]) {
+function BetterItemsTriageSection({ item }: { item: DimItem }) {
+  const filterFactory = useSelector(filterFactorySelector);
+  const allItems = useSelector(allItemsSelector);
+
+  if (!item.stats) {
+    return null;
+  }
+  const betterWorseResults = getBetterWorseItems(item, allItems, filterFactory);
+
+  // done here if no array contains anything
+  if (!Object.values(betterWorseResults).some((a) => a.length)) {
+    return null;
+  }
+
+  const {
+    betterItems,
+    betterStatItems,
+    artificeBetterItems,
+    artificeBetterStatItems,
+    worseItems,
+    worseStatItems,
+    artificeWorseItems,
+    artificeWorseStatItems,
+  } = betterWorseResults;
+
+  const rows: [string, readonly [I18nKey, I18nKey], DimItem[], boolean][] = [
+    [t('Triage.BetterArmor'), descriptionBulletPoints.better, betterItems, false],
+    [t('Triage.WorseStatArmor'), descriptionBulletPoints.betterStats, betterStatItems, false],
+    [t('Triage.BetterArtificeArmor'), descriptionBulletPoints.better, artificeBetterItems, true],
+    [
+      t('Triage.BetterStatArtificeArmor'),
+      descriptionBulletPoints.betterStats,
+      artificeBetterStatItems,
+      true,
+    ],
+    [t('Triage.WorseArmor'), descriptionBulletPoints.worse, worseItems, false],
+    [t('Triage.BetterStatArmor'), descriptionBulletPoints.worseStats, worseStatItems, false],
+    [t('Triage.WorseArtificeArmor'), descriptionBulletPoints.worse, artificeWorseItems, true],
+    [
+      t('Triage.WorseStatArtificeArmor'),
+      descriptionBulletPoints.worseStats,
+      artificeWorseStatItems,
+      true,
+    ],
+  ];
+
+  return (
+    <CollapsibleTitle
+      title={t('Triage.BetterWorseArmor')}
+      sectionId="better-worse-armor"
+      defaultCollapsed={false}
+      className={styles.collapseTitle}
+      extra={<span className={styles.factorCollapsedValue}>!!</span>}
+      showExtraOnlyWhenCollapsed
+    >
+      <div className={styles.similarItemsTable}>
+        {rows.map(([label, [statDesc, perkDesc], itemCollection, showArtificeDesc]) => {
+          const tooltip = (
+            <>
+              {t('Triage.BetterWorseIncludes')}
+              <ul>
+                <li>
+                  {t(statDesc)}
+                  {showArtificeDesc && (
+                    <span className={styles.artificeExplanation}>
+                      <br />
+                      {t('Triage.AccountsForArtifice')}
+                    </span>
+                  )}
+                </li>
+                <li>{t(perkDesc)}</li>
+              </ul>
+            </>
+          );
+          if (itemCollection.length) {
+            const filter = itemCollection.map((i) => `id:${i.id}`).join(' or ');
+            return (
+              <div className={styles.tableRow} key={label}>
+                <span>
+                  <PressTip tooltip={tooltip} elementType="span" placement="top">
+                    {label}
+                  </PressTip>
+                </span>
+                <span className={styles.count}>{itemCollection.length}</span>
+                <span className={styles.controls}>
+                  <StartCompareButton
+                    filter={`id:${item.id} or ${filter}`}
+                    items={itemCollection}
+                    initialItem={item}
+                  />
+                </span>
+              </div>
+            );
+          }
+        })}
+      </div>
+    </CollapsibleTitle>
+  );
+}
+
+function ArmorStatsTriageSection({ item }: { item: DimItem }) {
+  const allItems = useSelector(allItemsSelector);
+  const customTotalStatsByClass = useSelector(settingSelector('customTotalStatsByClass'));
+
+  let extra: JSX.Element | string = '?';
+  let highStats: JSX.Element | null = null;
+  if (!item.classified) {
+    extra = '–';
+
+    const notableStats = getNotableStats(item, customTotalStatsByClass, allItems);
+    if (notableStats.notableStats.length > 0) {
+      const bestStat = maxBy(notableStats.notableStats, (s) => s.percent)!;
+      extra = (
+        <span style={{ color: getValueColors(bestStat.quality)[1] }}>{bestStat.percent}%</span>
+      );
+
+      highStats = (
+        <div className={styles.statTable}>
+          <div className={styles.header}>
+            <div className={styles.statsHeaderLeft}>
+              {t('Triage.YourBestItem')} (
+              <BucketIcon
+                className={clsx(styles.inlineIcon, styles.weaponSvg)}
+                bucketHash={item.bucket.hash}
+              />
+              )
+            </div>
+            <div className={styles.statsHeaderRight}>{t('Triage.ThisItem')}</div>
+          </div>
+          <div className={styles.statsHeaderDivider} />
+          {notableStats.notableStats?.map(({ best, quality, percent, stat }) => (
+            <div className={styles.tableRow} key={stat.statHash}>
+              <span>
+                {(stat.displayProperties.icon && (
+                  <BungieImage
+                    key={stat.statHash}
+                    className={styles.factorIcon}
+                    src={stat.displayProperties.icon}
+                  />
+                )) ||
+                  ' '}
+              </span>
+              <span className={styles.statValue}>{best}</span>
+              <span className={styles.dimmed}>{stat.displayProperties.name}</span>
+              <span className={styles.statValue}>{stat.base}</span>
+              <span>
+                (<span style={{ color: getValueColors(quality)[1] }}>{percent}%</span>)
+              </span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+  }
+  return (
+    <CollapsibleTitle
+      title={t('Triage.HighStats')}
+      sectionId="triage-highstat"
+      defaultCollapsed={false}
+      showExtraOnlyWhenCollapsed
+      disabled={highStats === null}
+      className={styles.collapseTitle}
+      extra={extra}
+    >
+      {highStats}
+    </CollapsibleTitle>
+  );
+}
+
+function FactorCombo({
+  exampleItem,
+  factorCombo,
+}: {
+  exampleItem: DimItem;
+  factorCombo: Factor[];
+}) {
   return (
     <div className={styles.factorCombo}>
       {factorCombo.map((factor) => (
         <React.Fragment key={factor.id}>{factor.render(exampleItem)}</React.Fragment>
       ))}
     </div>
+  );
+}
+
+function StartCompareButton({
+  filter,
+  items,
+  initialItem,
+}: {
+  filter: string;
+  items: DimItem[];
+  /** The first item added to compare, so we can highlight it. */
+  initialItem: DimItem;
+}) {
+  const dispatch = useDispatch();
+  const compare = () => {
+    dispatch(compareFilteredItems(filter, items, initialItem));
+    hideItemPopup();
+  };
+
+  const type = items[0]?.typeName;
+  if (!type || items.some((i) => i.typeName !== type)) {
+    return null;
+  }
+
+  return (
+    <a onClick={compare} title={t('Compare.Button')} className={filterButtonStyles.setFilterButton}>
+      <AppIcon icon={compareIcon} />
+    </a>
   );
 }

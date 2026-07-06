@@ -1,35 +1,14 @@
-@import '../variables.scss';
-
-// TODO: composes itemDetails for that padding
-
-.descriptionTools {
-  composes: flexRow from '../dim-ui/common.m.scss';
-  margin: 5px 10px;
-
-  @include horizontal-space-children(10px);
-}
+@use '../variables.scss' as *;
 
 .description {
   margin: 5px 10px 5px;
   white-space: pre-wrap;
 }
 
-.officialDescription {
-  composes: description;
-  font-style: italic;
-  overflow: auto;
-}
-
-.wishListLabel {
+.label {
   font-weight: bold;
 }
-.wishListTextContent {
+
+.secondaryText {
   font-style: italic;
-}
-.loreLink {
-  white-space: nowrap;
-  img {
-    vertical-align: text-bottom;
-    margin-right: 0.2em;
-  }
 }

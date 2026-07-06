@@ -1,162 +1,238 @@
-import React from 'react';
-import clsx from 'clsx';
-import _ from 'lodash';
-import { t } from 'app/i18next-t';
-import type { DestinyVersion } from '@destinyitemmanager/dim-api-types';
-import type { DimCharacterStat, DimStore } from 'app/inventory/store-types';
+import BungieImage from 'app/dim-ui/BungieImage';
 import FractionalPowerLevel from 'app/dim-ui/FractionalPowerLevel';
-import PressTip from 'app/dim-ui/PressTip';
-import { percent } from 'app/shell/filters';
+import { PressTip } from 'app/dim-ui/PressTip';
 import { showGearPower } from 'app/gear-power/gear-power';
-import { armorStats } from 'app/inventory/store/stats';
-import { getD1CharacterStatTiers, statsWithTiers } from 'app/inventory/store/character-utils';
-import './CharacterStats.scss';
+import { t } from 'app/i18next-t';
+import { ItemPowerSet } from 'app/inventory/ItemPowerSet';
+import { DimItem, PluggableInventoryItemDefinition } from 'app/inventory/item-types';
+import { profileResponseSelector } from 'app/inventory/selectors';
+import type { DimCharacterStat, DimStore } from 'app/inventory/store-types';
+import { StorePowerLevel, powerLevelSelector } from 'app/inventory/store/selectors';
+import { getLoadoutStats } from 'app/loadout-drawer/loadout-utils';
+import { getSubclassPlugHashes } from 'app/loadout/loadout-item-utils';
+import { Loadout, ResolvedLoadoutItem } from 'app/loadout/loadout-types';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { armorStats } from 'app/search/d2-known-values';
+import { RootState } from 'app/store/types';
+import { filterMap, sumBy } from 'app/utils/collections';
+import clsx from 'clsx';
+import { BucketHashes } from 'data/d2/generated-enums';
+import React from 'react';
+import { useSelector } from 'react-redux';
+import helmetIcon from '../../../destiny-icons/armor_types/helmet.svg';
+import * as styles from './CharacterStats.m.scss';
+import StatTooltip from './StatTooltip';
 
-interface Props {
-  stats?: DimStore['stats'];
-  destinyVersion: DestinyVersion;
-  storeId?: string;
-}
-
-function CharacterStat({ stat }: { stat: DimCharacterStat }) {
+function CharacterPower({ stats }: { stats: PowerStat[] }) {
   return (
-    <>
-      <img src={stat.icon} alt={stat.name} />
-      <div>
-        {stat.hash < 0 ? (
-          <span className="powerStat">
-            <FractionalPowerLevel power={stat.value} />
-          </span>
-        ) : (
-          stat.value
-        )}
-        {(stat.hasClassified || stat.differentEquippableMaxGearPower) && (
-          <sup className="asterisk">*</sup>
-        )}
-      </div>
-    </>
+    <div className={styles.powerFormula}>
+      {stats.map((stat) => (
+        <PressTip
+          key={stat.name}
+          tooltip={() => (
+            <>
+              {stat.name}
+              {stat.problems?.hasClassified && `\n\n${t('Loadouts.Classified')}`}
+              {stat.richTooltipContent && (
+                <>
+                  <hr />
+                  <div className={styles.richTooltipWrapper}>{stat.richTooltipContent()}</div>
+                </>
+              )}
+            </>
+          )}
+        >
+          <div
+            className="stat"
+            aria-label={`${stat.name} ${stat.value}`}
+            role={stat.onClick ? 'button' : 'group'}
+            onClick={stat.onClick}
+          >
+            {typeof stat.icon === 'string' ? <img src={stat.icon} alt={stat.name} /> : stat.icon}
+
+            <div className={styles.powerStat}>
+              <FractionalPowerLevel power={stat.value} />
+            </div>
+            {stat.problems?.hasClassified && <sup className={styles.asterisk}>*</sup>}
+          </div>
+        </PressTip>
+      ))}
+    </div>
   );
 }
 
-/**
- * Render the character information: Max Power/Stat points.
- * May want to consider splitting D1 from D2 at some point.
- */
-function CharacterStats({ stats, destinyVersion, storeId }: Props) {
-  if (!stats) {
+interface PowerStat {
+  value: number;
+  icon: string | React.ReactNode;
+  name: string;
+  richTooltipContent?: () => React.ReactNode;
+  onClick?: () => void;
+  problems?: StorePowerLevel['problems'];
+}
+
+export function PowerFormula({ storeId }: { storeId: string }) {
+  const defs = useD2Definitions();
+  const powerLevel = useSelector((state: RootState) => powerLevelSelector(state, storeId));
+
+  const profileResponse = useSelector(profileResponseSelector);
+
+  if (!defs || !profileResponse || !powerLevel) {
     return null;
   }
 
-  if (destinyVersion === 1) {
-    const statList = statsWithTiers.map((h) => stats[h]);
-    const tooltips = statList.map((stat) => {
-      if (stat) {
-        const tier = Math.floor(Math.min(300, stat.value) / 60);
-        // t('Stats.TierProgress_Max')
-        const next = t('Stats.TierProgress', {
-          context: tier === 5 ? 'Max' : '',
-          progress: tier === 5 ? stat.value : stat.value % 60,
-          tier,
-          nextTier: tier + 1,
-          statName: stat.name,
-        });
-        let cooldown = stat.cooldown || '';
-        if (cooldown) {
-          cooldown = t(`Cooldown.${stat.effect}`, { cooldown });
-          // t('Cooldown.Grenade')
-          // t('Cooldown.Melee')
-          // t('Cooldown.Super')
-        }
-        return next + cooldown;
-      }
-    });
-
-    return (
-      <div className="stat-bars">
-        {statList.map((stat, index) => (
-          <PressTip key={stat.hash} tooltip={tooltips[index]}>
-            <div className="stat">
-              <img src={stat.icon} alt={stat.name} />
-              {getD1CharacterStatTiers(stat).map((n, index) => (
-                <div key={index} className="bar">
-                  <div
-                    className={clsx('progress', {
-                      complete: n / 60 === 1,
-                    })}
-                    style={{ width: percent(n / 60) }}
-                  />
-                </div>
-              ))}
-            </div>
-          </PressTip>
-        ))}
-      </div>
-    );
-  } else {
-    const powerTooltip = (stat: DimCharacterStat): React.ReactNode => (
+  const maxGearPower: PowerStat = {
+    value: powerLevel.maxEquippableGearPower,
+    icon: helmetIcon,
+    name: t('Stats.MaxGearPowerOneExoticRule'),
+    // used to be t('Stats.MaxGearPowerAll') or t('Stats.MaxGearPower'), a translation i don't want to lose yet
+    problems: powerLevel.problems,
+    onClick: () => showGearPower(storeId),
+    richTooltipContent: () => (
       <>
-        {`${stat.name}${stat.hasClassified ? `\n\n${t('Loadouts.Classified')}` : ''}`}
-        {stat.richTooltip && (
-          <>
-            <hr />
-            <div className="richTooltipWrapper">
-              {stat.richTooltip}
-              {stat.differentEquippableMaxGearPower && (
-                <div className="tooltipFootnote">* {t('General.ClickForDetails')}</div>
-              )}
-            </div>
-          </>
-        )}
+        <ItemPowerSet
+          items={powerLevel.highestPowerItems}
+          powerFloor={Math.floor(powerLevel.maxGearPower)}
+        />
+        <hr />
+        <div className={styles.dropLevel}>
+          <span>{t('Stats.DropLevel')}*</span>
+          <span>
+            <FractionalPowerLevel power={powerLevel.dropPower} />
+          </span>
+        </div>
+        <div className={styles.tooltipFootnote}>* {t('General.ClickForDetails')}</div>
       </>
-    );
-    const powerInfos: {
-      stat: DimCharacterStat;
-      tooltip: React.ReactNode;
-    }[] = _.compact([stats.maxTotalPower, stats.maxGearPower, stats.powerModifier]).map((stat) => ({
-      stat,
-      tooltip: powerTooltip(stat),
-    }));
+    ),
+  };
 
-    const statTooltip = (stat: DimCharacterStat): React.ReactNode =>
-      `${stat.name}: ${stat.value}\n${stat.description}`;
-    const statInfos: {
-      stat: DimCharacterStat;
-      tooltip: React.ReactNode;
-    }[] = armorStats.map((h) => stats[h]).map((stat) => ({ stat, tooltip: statTooltip(stat) }));
-
-    return (
-      <div className="stat-bars destiny2">
-        {[powerInfos, statInfos].map((stats, index) => (
-          <div key={index} className="stat-row">
-            {stats.map(({ stat, tooltip }) => {
-              // if this is the "max gear power" stat (hash -3),
-              // add in an onClick and an extra class
-              const isMaxGearPower = stat.hash === -3 && storeId;
-
-              return (
-                <PressTip key={stat.hash} tooltip={tooltip} allowClickThrough={true}>
-                  <div
-                    className={clsx('stat', { pointerCursor: isMaxGearPower })}
-                    aria-label={`${stat.name} ${stat.value}`}
-                    role={isMaxGearPower ? 'button' : 'group'}
-                    onClick={
-                      isMaxGearPower
-                        ? () => {
-                            showGearPower(storeId!);
-                          }
-                        : undefined
-                    }
-                  >
-                    <CharacterStat stat={stat} />
-                  </div>
-                </PressTip>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-    );
-  }
+  const stats = [maxGearPower];
+  return <CharacterPower stats={stats} />;
 }
 
-export default React.memo(CharacterStats);
+/**
+ * Display each of the main stats (Resistance, Discipline, etc) for a character.
+ * This is used for both loadouts and characters - anything that has a character
+ * stats list. This is only used for D2.
+ */
+export function CharacterStats({
+  stats,
+  showTotal,
+  equippedHashes,
+  className,
+}: {
+  /**
+   * A list of stats to display. This should contain an entry for each stat in
+   * `armorStats`, but if one is missing it won't be shown - you can use this to
+   * show a subset of stats.
+   */
+  stats: {
+    [hash: number]: DimCharacterStat;
+  };
+  /** Whether to show the total stat sum of the set. */
+  showTotal?: boolean;
+  /**
+   * Item hashes for equipped exotics, used to show more accurate cooldown
+   * tooltips.
+   */
+  equippedHashes: Set<number>;
+  className?: string;
+}) {
+  // Select only the armor stats, in the correct order
+  const statInfos = filterMap(armorStats, (h) => stats[h]);
+
+  return (
+    <div className={clsx(styles.armorStats, className)}>
+      {showTotal && (
+        <div className={clsx(styles.tier, 'stat')}>
+          {t('LoadoutBuilder.StatTotal', { total: sumBy(statInfos, (s) => s.value) })}
+        </div>
+      )}
+      {statInfos.map((stat) => (
+        <PressTip
+          key={stat.hash}
+          tooltip={<StatTooltip stat={stat} equippedHashes={equippedHashes} />}
+        >
+          <div
+            className={clsx('stat', {
+              [styles.boostedValue]: stat.breakdown?.some(
+                (change) => change.source === 'runtimeEffect',
+              ),
+            })}
+            aria-label={`${stat.displayProperties.name} ${stat.value}`}
+            role="group"
+          >
+            <BungieImage src={stat.displayProperties.icon} alt={stat.displayProperties.name} />
+            <div>{stat.value}</div>
+          </div>
+        </PressTip>
+      ))}
+    </div>
+  );
+}
+
+// TODO: just a plain "show stats" component
+
+/**
+ * Show the stats for a DimStore. This is only used for D2 - D1 uses D1CharacterStats.
+ */
+export function StoreCharacterStats({ store }: { store: DimStore }) {
+  const equippedItems = store.items.filter((i) => i.equipped);
+  const subclass = equippedItems.find((i) => i.bucket.hash === BucketHashes.Subclass);
+
+  // All equipped items
+  const equippedHashes = new Set(equippedItems.map((i) => i.hash));
+  // Plus all subclass mods
+  if (subclass?.sockets) {
+    for (const socket of subclass.sockets.allSockets) {
+      const hash = socket.plugged?.plugDef.hash;
+      if (hash !== undefined) {
+        equippedHashes.add(hash);
+      }
+    }
+  }
+  return <CharacterStats stats={store.stats} equippedHashes={equippedHashes} />;
+}
+
+/**
+ * Show the stats for a DIM Loadout. This is only used for D2.
+ */
+// TODO: just take a FullyResolvedLoadout?
+export function LoadoutCharacterStats({
+  loadout,
+  subclass,
+  items,
+  allMods,
+  className,
+}: {
+  loadout: Loadout;
+  subclass?: ResolvedLoadoutItem;
+  allMods: PluggableInventoryItemDefinition[];
+  items?: (ResolvedLoadoutItem | DimItem)[];
+  className?: string;
+}) {
+  const defs = useD2Definitions()!;
+  const equippedItems =
+    items
+      ?.filter((li) => ('loadoutItem' in li ? li.loadoutItem.equip && !li.missing : true))
+      .map((li) => ('loadoutItem' in li ? li.item : li)) ?? [];
+
+  // All equipped items
+  const equippedHashes = new Set(equippedItems.map((i) => i.hash));
+  // Plus all subclass mods
+  for (const { plugHash } of getSubclassPlugHashes(subclass)) {
+    equippedHashes.add(plugHash);
+  }
+
+  const stats = getLoadoutStats(
+    defs,
+    loadout.classType,
+    subclass,
+    equippedItems,
+    allMods,
+    loadout.parameters?.includeRuntimeStatBenefits ?? true,
+  );
+
+  return (
+    <CharacterStats className={className} showTotal stats={stats} equippedHashes={equippedHashes} />
+  );
+}

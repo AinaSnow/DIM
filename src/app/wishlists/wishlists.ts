@@ -1,9 +1,28 @@
-import { DimStore } from '../inventory/store-types';
+import { normalizeToEnhanced, normalizeToUnenhanced } from 'app/utils/perk-utils';
+import { BucketHashes, ItemCategoryHashes, PlugCategoryHashes } from 'data/d2/generated-enums';
+import { DimItem, DimPlug } from '../inventory/item-types';
 import { DimWishList, WishListRoll } from './types';
-import { D2Item, DimItem, DimPlug } from '../inventory/item-types';
-import _ from 'lodash';
-import { MODIFICATIONS_BUCKET } from 'app/search/d2-known-values';
-import { ItemCategoryHashes } from 'data/d2/generated-enums';
+
+const targetPCHs = [
+  PlugCategoryHashes.Frames,
+  PlugCategoryHashes.Bowstrings,
+  PlugCategoryHashes.Batteries,
+  PlugCategoryHashes.Blades,
+  PlugCategoryHashes.Tubes,
+  PlugCategoryHashes.Scopes,
+  PlugCategoryHashes.Hafts,
+  PlugCategoryHashes.Stocks,
+  PlugCategoryHashes.Guards,
+  PlugCategoryHashes.Barrels,
+  PlugCategoryHashes.Arrows,
+  PlugCategoryHashes.Grips,
+  PlugCategoryHashes.Scopes,
+  PlugCategoryHashes.Magazines,
+  PlugCategoryHashes.MagazinesGl,
+  PlugCategoryHashes.Rails,
+  PlugCategoryHashes.Bolts,
+  PlugCategoryHashes.Origins,
+];
 
 export const enum UiWishListRoll {
   Good = 1,
@@ -11,7 +30,7 @@ export const enum UiWishListRoll {
 }
 
 export function toUiWishListRoll(
-  inventoryWishListRoll?: InventoryWishListRoll
+  inventoryWishListRoll?: InventoryWishListRoll,
 ): UiWishListRoll | undefined {
   if (!inventoryWishListRoll) {
     return undefined;
@@ -32,64 +51,32 @@ export interface InventoryWishListRoll {
   isUndesirable?: boolean;
 }
 
-let previousWishListRolls: { [itemHash: number]: WishListRoll[] } | undefined;
-let seenItemIds = new Set<string>();
-let inventoryRolls: { [key: string]: InventoryWishListRoll } = {};
-
-/** Get InventoryWishListRolls for every item in the stores. */
-export function getInventoryWishListRolls(
-  stores: DimStore[],
-  rollsByHash: { [itemHash: number]: WishListRoll[] }
-): { [key: string]: InventoryWishListRoll } {
-  if (
-    !$featureFlags.wishLists ||
-    _.isEmpty(rollsByHash) ||
-    !stores.length ||
-    !stores[0].isDestiny2()
-  ) {
-    return {};
-  }
-
-  if (previousWishListRolls !== rollsByHash) {
-    previousWishListRolls = rollsByHash;
-    seenItemIds = new Set<string>();
-    inventoryRolls = {};
-  }
-
-  for (const store of stores) {
-    for (const item of store.items) {
-      if (item.isDestiny2() && item.sockets && !seenItemIds.has(item.id)) {
-        const wishListRoll = getInventoryWishListRoll(item, rollsByHash);
-        if (wishListRoll) {
-          inventoryRolls[item.id] = wishListRoll;
-        }
-        seenItemIds.add(item.id);
-      }
-    }
-  }
-
-  return inventoryRolls;
-}
-
 /**
  * Is this a weapon or armor plug that we'll consider?
  * This is in place so that we can disregard intrinsics, shaders/cosmetics
  * and other things (like masterworks) which add more variance than we need.
  */
 function isWeaponOrArmorOrGhostMod(plug: DimPlug): boolean {
+  if (targetPCHs.includes(plug.plugDef.plug.plugCategoryHash)) {
+    return true;
+  }
+
   if (
     plug.plugDef.itemCategoryHashes?.find(
       (ich) =>
         ich === ItemCategoryHashes.WeaponModsIntrinsic ||
         ich === ItemCategoryHashes.WeaponModsGameplay ||
-        ich === ItemCategoryHashes.ArmorModsGameplay
+        ich === ItemCategoryHashes.ArmorModsGameplay,
     )
   ) {
     return false;
   }
 
-  // if it's a modification, ignore it
-  if (plug.plugDef.inventory!.bucketTypeHash === MODIFICATIONS_BUCKET) {
+  // if it's an instanced modification, ignore it
+  if (
+    plug.plugDef.inventory!.bucketTypeHash === BucketHashes.Modifications &&
+    plug.plugDef.inventory!.isInstanceItem
+  ) {
     return false;
   }
 
@@ -99,23 +86,35 @@ function isWeaponOrArmorOrGhostMod(plug: DimPlug): boolean {
         ich === ItemCategoryHashes.WeaponMods ||
         ich === ItemCategoryHashes.ArmorMods ||
         ich === ItemCategoryHashes.BonusMods ||
-        ich === ItemCategoryHashes.GhostModsPerks
+        ich === ItemCategoryHashes.GhostModsPerks,
     ) ?? false
   ); // weapon, then armor, then bonus (found on armor perks), then ghost mod
 }
 
 /** Is the plug's hash included in the recommended perks from the wish list roll? */
-function isWishListPlug(plug: DimPlug, wishListRoll: WishListRoll): boolean {
-  return wishListRoll.recommendedPerks.has(plug.plugDef.hash);
+export function isWishListPlug(
+  plug: DimPlug,
+  wishListRoll?: WishListRoll | InventoryWishListRoll,
+): boolean {
+  const perks =
+    wishListRoll &&
+    ('recommendedPerks' in wishListRoll
+      ? wishListRoll.recommendedPerks
+      : wishListRoll.wishListPerks);
+  return Boolean(
+    perks &&
+    // Either the enhanced or unenhanced version of the perk is present
+    (perks.has(normalizeToUnenhanced(plug.plugDef.hash)) ||
+      perks.has(normalizeToEnhanced(plug.plugDef.hash))),
+  );
 }
 
 /** Get all of the plugs for this item that match the wish list roll. */
-function getWishListPlugs(item: D2Item, wishListRoll: WishListRoll): Set<number> {
-  if (!item.sockets) {
-    return new Set();
-  }
-
+function getWishListPlugs(item: DimItem, wishListRoll: WishListRoll): Set<number> {
   const wishListPlugs = new Set<number>();
+  if (!item.sockets) {
+    return wishListPlugs;
+  }
 
   for (const s of item.sockets.allSockets) {
     if (s.plugged) {
@@ -134,19 +133,21 @@ function getWishListPlugs(item: D2Item, wishListRoll: WishListRoll): Set<number>
  * Do all desired perks from the wish list roll exist on this item?
  * Disregards cosmetics and some other socket types.
  */
-function allDesiredPerksExist(item: D2Item, wishListRoll: WishListRoll): boolean {
-  if (!item.sockets) {
-    return false;
-  }
-
+function allDesiredPerksExist(item: DimItem, wishListRoll: WishListRoll): boolean {
   if (wishListRoll.isExpertMode) {
-    for (const rp of wishListRoll.recommendedPerks) {
+    for (const recommendedPerk of wishListRoll.recommendedPerks) {
       let included = false;
 
-      outer: for (const s of item.sockets.allSockets) {
+      // this function serves only getInventoryWishListRoll,
+      // which has already ensured item.sockets exists
+      outer: for (const s of item.sockets!.allSockets) {
         if (s.plugOptions) {
-          for (const dp of s.plugOptions) {
-            if (dp.plugDef.hash === rp) {
+          for (const plug of s.plugOptions) {
+            if (
+              // Either the enhanced or unenhanced version of the perk is present
+              normalizeToUnenhanced(plug.plugDef.hash) === recommendedPerk ||
+              normalizeToEnhanced(plug.plugDef.hash) === recommendedPerk
+            ) {
               included = true;
               break outer;
             }
@@ -161,39 +162,30 @@ function allDesiredPerksExist(item: D2Item, wishListRoll: WishListRoll): boolean
     return true;
   }
 
-  return item.sockets.allSockets.every(
+  return item.sockets!.allSockets.every(
     (s) =>
       !s.plugged ||
       !isWeaponOrArmorOrGhostMod(s.plugged) ||
-      s.plugOptions.some((dp) => isWishListPlug(dp, wishListRoll))
+      s.plugOptions.some((dp) => isWishListPlug(dp, wishListRoll)),
   );
 }
 
 /** Get the InventoryWishListRoll for this item. */
-function getInventoryWishListRoll(
+export function getInventoryWishListRoll(
   item: DimItem,
-  wishListRolls: { [itemHash: number]: WishListRoll[] }
+  wishListRolls: Map<number, WishListRoll[]>,
 ): InventoryWishListRoll | undefined {
-  if (!wishListRolls || !item || !item.isDestiny2() || !item.sockets) {
-    return undefined;
-  }
-
-  let matchingWishListRoll: WishListRoll | undefined;
   // It could be under the item hash, the wildcard, or any of the item's categories
   for (const hash of [item.hash, DimWishList.WildcardItemId, ...item.itemCategoryHashes]) {
-    matchingWishListRoll = wishListRolls[hash]?.find((cr) => allDesiredPerksExist(item, cr));
+    const matchingWishListRoll = wishListRolls
+      .get(hash)
+      ?.find((cr) => allDesiredPerksExist(item, cr));
     if (matchingWishListRoll) {
-      break;
+      return {
+        wishListPerks: getWishListPlugs(item, matchingWishListRoll),
+        notes: matchingWishListRoll.notes,
+        isUndesirable: matchingWishListRoll.isUndesirable,
+      };
     }
   }
-
-  if (matchingWishListRoll) {
-    return {
-      wishListPerks: getWishListPlugs(item, matchingWishListRoll),
-      notes: matchingWishListRoll.notes,
-      isUndesirable: matchingWishListRoll.isUndesirable,
-    };
-  }
-
-  return undefined;
 }

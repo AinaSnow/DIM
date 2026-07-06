@@ -1,30 +1,7 @@
 import { Reducer } from 'redux';
-import * as actions from './actions';
 import { ActionType, getType } from 'typesafe-actions';
-import { getInventoryWishListRolls } from './wishlists';
-import { RootState } from 'app/store/types';
-import _ from 'lodash';
+import * as actions from './actions';
 import { WishListAndInfo } from './types';
-import { createSelector } from 'reselect';
-import { storesSelector } from '../inventory/selectors';
-
-export const wishListsSelector = (state: RootState) => state.wishLists;
-
-export const wishListsLastFetchedSelector = (state: RootState) =>
-  wishListsSelector(state).lastFetched;
-
-const wishListsByHashSelector = createSelector(wishListsSelector, (wls) =>
-  _.groupBy(wls.wishListAndInfo.wishListRolls?.filter(Boolean), (r) => r.itemHash)
-);
-
-export const wishListsEnabledSelector = (state: RootState) =>
-  (wishListsSelector(state)?.wishListAndInfo?.wishListRolls?.length || 0) > 0;
-
-export const inventoryWishListsSelector = createSelector(
-  storesSelector,
-  wishListsByHashSelector,
-  getInventoryWishListRolls
-);
 
 export interface WishListsState {
   loaded: boolean;
@@ -36,14 +13,14 @@ export type WishListAction = ActionType<typeof actions>;
 
 const initialState: WishListsState = {
   loaded: false,
-  wishListAndInfo: { title: undefined, description: undefined, wishListRolls: [] },
+  wishListAndInfo: { infos: [], wishListRolls: [] },
   lastFetched: undefined,
 };
 
 export const wishLists: Reducer<WishListsState, WishListAction> = (
   state: WishListsState = initialState,
-  action: WishListAction
-) => {
+  action: WishListAction,
+): WishListsState => {
   switch (action.type) {
     case getType(actions.loadWishLists):
       return {
@@ -56,13 +33,11 @@ export const wishLists: Reducer<WishListsState, WishListAction> = (
       return {
         ...state,
         wishListAndInfo: {
-          title: undefined,
-          description: undefined,
+          infos: [],
           wishListRolls: [],
           source: '',
         },
         lastFetched: undefined,
-        wishListSource: undefined,
         loaded: true,
       };
     }

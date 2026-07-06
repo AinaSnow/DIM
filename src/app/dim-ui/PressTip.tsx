@@ -1,91 +1,70 @@
-import React, { useEffect, useRef, useState } from 'react';
-import ReactDOM from 'react-dom';
-import { popperGenerator, Instance, Options, Padding } from '@popperjs/core/lib/popper-lite';
-import flip from '@popperjs/core/lib/modifiers/flip';
-import preventOverflow from '@popperjs/core/lib/modifiers/preventOverflow';
-import applyStyles from '@popperjs/core/lib/modifiers/applyStyles';
-import computeStyles from '@popperjs/core/lib/modifiers/computeStyles';
-import popperOffsets from '@popperjs/core/lib/modifiers/popperOffsets';
-import offset from '@popperjs/core/lib/modifiers/offset';
-import arrow from '@popperjs/core/lib/modifiers/arrow';
-import styles from './PressTip.m.scss';
-import _ from 'lodash';
+import { Placement } from '@floating-ui/dom';
+import { tempContainer } from 'app/utils/temp-container';
+import clsx from 'clsx';
+import React, {
+  RefObject,
+  createContext,
+  use,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
+import * as styles from './PressTip.m.scss';
+import { usePopper } from './usePopper';
 
-interface Props {
-  tooltip: React.ReactNode;
-  children: React.ReactElement<any, any>;
-  allowClickThrough?: boolean;
-  /** By default everything gets wrapped in a div, but you can choose a different element type here. */
-  elementType?: React.ReactType;
-}
-
-/** Makes a custom popper that doesn't have the event listeners modifier */
-const createPopper = popperGenerator({
-  defaultModifiers: [
-    popperOffsets,
-    offset,
-    computeStyles,
-    applyStyles,
-    flip,
-    preventOverflow,
-    arrow,
-  ],
+/**
+ * The element where the PressTip should be added to. By default it's the body,
+ * but other elements (like Sheet) can use this to override the attachment point
+ * for PressTips below them in the tree.
+ */
+// eslint-disable-next-line @eslint-react/naming-convention-context-name
+export const PressTipRoot = createContext<RefObject<HTMLElement | null>>({
+  current: null,
 });
 
-const popperOptions = (): Partial<Options> => {
-  const headerHeight = document.getElementById('header')!.clientHeight;
-  const padding: Padding = {
-    left: 0,
-    top: headerHeight + 5,
-    right: 0,
-    bottom: 0,
-  };
-
-  return {
-    placement: 'top',
-    modifiers: [
-      {
-        name: 'preventOverflow',
-        options: {
-          priority: ['bottom', 'top', 'right', 'left'],
-          boundariesElement: 'viewport',
-          padding,
-        },
-      },
-      {
-        name: 'flip',
-        options: {
-          behavior: ['top', 'bottom', 'right', 'left'],
-          boundariesElement: 'viewport',
-          padding,
-        },
-      },
-      {
-        name: 'offset',
-        options: {
-          offset: [0, 5],
-        },
-      },
-      {
-        name: 'arrow',
-        options: {
-          element: '.' + styles.arrow,
-        },
-      },
-    ],
-  };
-};
+interface Props {
+  /**
+   * The tooltip may be provided directly, or as a function which will defer
+   * constructing the tree until the tooltip is shown.
+   */
+  tooltip: React.ReactNode | (() => React.ReactNode);
+  /**
+   * The children of this component define the content that will trigger the tooltip.
+   */
+  children?: React.ReactNode;
+  /** By default everything gets wrapped in a div, but you can choose a different element type here. */
+  elementType?: React.ElementType;
+  className?: string;
+  /** Allow the tooltip to be wider than the normal size */
+  wide?: boolean;
+  /** Reduce padding around the tooltip content. This is appropriate for single-line strings. */
+  minimal?: boolean;
+  style?: React.CSSProperties;
+  placement?: Placement;
+  role?: string;
+}
 
 type ControlProps = Props &
   React.HTMLAttributes<HTMLDivElement> & {
     open: boolean;
-    triggerRef: React.RefObject<HTMLDivElement>;
+    triggerRef: React.RefObject<HTMLDivElement | null>;
   };
+
+interface TooltipCustomization {
+  header?: React.ReactNode;
+  subheader?: React.ReactNode;
+  className?: string | null;
+}
+const TooltipContext = createContext<React.Dispatch<
+  React.SetStateAction<TooltipCustomization>
+> | null>(null);
 
 /**
  * <PressTip.Control /> can be used to have a controlled version of the PressTip
  *
- * Example:
+ * @example
  *
  * const ref = useRef<HTMLDivElement>(null);
  * <PressTip.Control
@@ -105,74 +84,195 @@ function Control({
   triggerRef,
   children,
   elementType: Component = 'div',
+  className,
+  placement,
+  wide,
+  minimal,
   ...rest
 }: ControlProps) {
-  const popper = useRef<Instance | undefined>();
   const tooltipContents = useRef<HTMLDivElement>(null);
+  const pressTipRoot = use(PressTipRoot);
+  const [customization, customizeTooltip] = useState<TooltipCustomization>({ className: null });
 
-  const destroy = () => {
-    if (popper.current) {
-      popper.current.destroy();
-      popper.current = undefined;
-    }
-  };
-
-  useEffect(() => {
-    // Reposition the popup as it is shown or if its size changes
-    if (!open) {
-      return destroy();
-    }
-
-    if (!tooltipContents.current || !triggerRef.current) {
-      return;
-    } else {
-      if (popper.current) {
-        popper.current.update();
-      } else {
-        const options = popperOptions();
-
-        popper.current = createPopper(triggerRef.current, tooltipContents.current, options);
-        popper.current.update();
-        setTimeout(() => popper.current?.update(), 0); // helps fix arrow position
-      }
-    }
-
-    return () => {
-      destroy();
-    };
-  }, [open, triggerRef]);
+  usePopper(
+    {
+      contents: tooltipContents,
+      reference: triggerRef,
+      arrowClassName: styles.arrow,
+      placement,
+    },
+    [open],
+  );
 
   if (!tooltip) {
-    return <div>{children}</div>;
+    const { style } = rest;
+    return (
+      <Component className={className} style={style} {...rest}>
+        {children}
+      </Component>
+    );
   }
 
   // TODO: if we reuse a stable tooltip container instance we could animate between them
+  // TODO: or use framer motion layout animations?
   return (
-    <Component ref={triggerRef} {...rest}>
+    <Component ref={triggerRef} className={clsx(styles.control, className)} {...rest}>
       {children}
       {open &&
-        ReactDOM.createPortal(
-          <div className={styles.tooltip} ref={tooltipContents}>
-            <div className={styles.content}>{_.isFunction(tooltip) ? tooltip() : tooltip}</div>
+        createPortal(
+          <div
+            className={clsx(styles.tooltip, customization.className, {
+              [styles.wideTooltip]: wide,
+              [styles.minimalTooltip]: minimal,
+            })}
+            ref={tooltipContents}
+          >
+            {Boolean(customization.header || customization.subheader) && (
+              <div className={styles.header}>
+                <h2>{customization.header}</h2>
+                {Boolean(customization.subheader) && <h3>{customization.subheader}</h3>}
+              </div>
+            )}
+            {containsContentStyle(tooltip) ? (
+              tooltip
+            ) : (
+              <div className={styles.content}>
+                <TooltipContext value={customizeTooltip}>
+                  {typeof tooltip === 'function' ? tooltip() : tooltip}
+                </TooltipContext>
+              </div>
+            )}
+
             <div className={styles.arrow} />
           </div>,
-          document.body
+          pressTipRoot.current || tempContainer,
         )}
     </Component>
   );
 }
 
 /**
+ * This checks to see if a tooltip already contains a "content" classname element.
+ * If so we can treat it as raw input rather than wrapping it in another copy of
+ * the default tooltip content wrapper.
+ */
+function containsContentStyle(tooltip: unknown): tooltip is React.ReactNode {
+  return Boolean(
+    tooltip &&
+    typeof tooltip === 'object' &&
+    ((Array.isArray(tooltip) && tooltip.some(containsContentStyle)) ||
+      ('props' in tooltip &&
+        tooltip.props &&
+        typeof tooltip.props === 'object' &&
+        (('className' in tooltip.props && tooltip.props.className === styles.content) ||
+          ('children' in tooltip.props &&
+            Array.isArray(tooltip.props.children) &&
+            tooltip.props.children.some(containsContentStyle))))),
+  );
+}
+
+/**
+ * This hook allows customization of the tooltip that the calling component is currently hosted within.
+ * It has no effect if the calling component is not hosted within a tooltip.
+ *
+ * @returns Whether the calling component is currently being hosted in a tooltip.
+ */
+export function useTooltipCustomization({
+  getHeader,
+  getSubheader,
+  className,
+}: {
+  /**
+   * A function that returns the content to be rendered in the tooltip's header (bold uppercase text). This
+   * **MUST** be memoized (e.g. wrapped in `useCallback`) to prevent an infinite loop.
+   */
+  getHeader?: () => React.ReactNode;
+
+  /**
+   * A function that returns the content to be rendered in the tooltip's subheader (dimmed text below the
+   * header). This **MUST** be memoized (e.g. wrapped in `useCallback`) to prevent an infinite loop.
+   */
+  getSubheader?: () => React.ReactNode;
+
+  /** The CSS class(es) to be applied to the tooltip's root element. */
+  className?: string | null;
+}) {
+  const customizeTooltip = use(TooltipContext);
+  useEffect(() => {
+    if (customizeTooltip) {
+      customizeTooltip((existing) => ({
+        ...existing,
+        ...(getHeader && { header: getHeader() }),
+        ...(getSubheader && { subheader: getSubheader() }),
+        ...(className !== undefined && { className }),
+      }));
+    }
+  }, [customizeTooltip, getHeader, getSubheader, className]);
+
+  return customizeTooltip !== null;
+}
+
+export const Tooltip = {
+  /**
+   * A convenience component used to customise the tooltip's header (bold uppercase text) from within JSX.
+   * This does not render anything and has no effect if the calling component is not currently hosted within
+   * a tooltip.
+   *
+   * If you want to display more than a single string, use the `useTooltipCustomization` hook instead.
+   */
+  Header: ({ text }: { text: string }) => {
+    useTooltipCustomization({ getHeader: useCallback(() => text, [text]) });
+    return null;
+  },
+
+  /**
+   * A convenience component used to customise the tooltip's subheader (dimmed text below the header) from
+   * within JSX. This does not render anything and has no effect if the calling component is not currently
+   * hosted within a tooltip.
+   *
+   * If you want to display more than a single string, use the `useTooltipCustomization` hook instead.
+   */
+  Subheader: ({ text }: { text: string }) => {
+    useTooltipCustomization({ getSubheader: useCallback(() => text, [text]) });
+    return null;
+  },
+
+  /**
+   * A convenience component used to add a CSS class to the tooltip's root component from within JSX.
+   * This does not render anything and has no effect if the calling component is not currently hosted within
+   * a tooltip.
+   */
+  Customize: ({ className }: { className: string | null }) => {
+    useTooltipCustomization({ className });
+    return null;
+  },
+
+  /**
+   * If the calling component is hosted within a tooltip, this component wraps its children in a styled `div`.
+   * If not, a fragment containing the children is returned instead.
+   */
+  Section: ({ children, className }: { children: React.ReactNode; className?: string }) => {
+    const tooltip = use(TooltipContext);
+    if (!tooltip) {
+      return <>{children}</>;
+    }
+    return <div className={clsx(styles.section, className)}>{children}</div>;
+  },
+};
+
+const hoverTime = 100; // ms that the cursor can be over the target before the presstip shows
+const pressTime = 300; // ms that the element can be pressed before the presstip shows
+
+/**
  * A "press tip" is a tooltip that can be shown by pressing on an element, or via hover.
  *
- * Tooltop content can be any React element, and can be updated through React.
+ * Tooltip content can be any React element, and can be updated through React.
  *
- * PressTip stops event propagation, so mobile can hold down on an element in lieu of hovering.
- * `allowClickThrough` property suppresses this and lets click events propagate.
+ * Short taps on the element will fire a click event rather than showing the element.
  *
  * <PressTip /> wraps <PressTip.Control /> to give you a simpler API for rendering a basic tooltip.
  *
- * Example:
+ * @example
  *
  * <PressTip
  *   tooltip={() => (
@@ -183,47 +283,106 @@ function Control({
  *   PressTip context element
  * </PressTip>
  */
-function PressTip({ allowClickThrough, ...rest }: Props) {
+export function PressTip(props: Props) {
+  // The timer before we show the presstip (different on hover and press)
   const timer = useRef<number>(0);
+  const touchStartTime = useRef<number>(0);
+  // The triggering element
   const ref = useRef<HTMLDivElement>(null);
+  // Allow us to distinguish between press and hover gestures
+  const startEvent = useRef<'pointerdown' | 'pointerenter'>(undefined);
+  // Absolute timestamp within which we will suppress clicks
+  const suppressClickUntil = useRef<number>(0);
   const [open, setOpen] = useState<boolean>(false);
 
-  const closeToolTip = (e) => {
-    allowClickThrough || e.preventDefault();
-    allowClickThrough || e.stopPropagation();
+  const closeToolTip = useCallback((e: React.PointerEvent | React.MouseEvent) => {
+    // Ignore events that aren't paired up
+    if (
+      !startEvent.current ||
+      (e.type === 'pointerup' && startEvent.current === 'pointerenter') ||
+      (e.type === 'pointerleave' && startEvent.current === 'pointerdown')
+    ) {
+      return;
+    }
     setOpen(false);
+    // click fires after pointerup, but we want to suppress click if we'd shown the presstip
+    if (
+      startEvent.current === 'pointerdown' &&
+      performance.now() - touchStartTime.current > pressTime
+    ) {
+      suppressClickUntil.current = performance.now() + 100;
+    }
     clearTimeout(timer.current);
-  };
+    timer.current = 0;
+    startEvent.current = undefined;
+  }, []);
 
-  const hover = () => {
+  // Fires on both pointerenter and pointerdown - does double duty for handling both hover tips and press tips
+  const hover = useCallback((e: React.PointerEvent) => {
+    if (
+      e.type === 'pointerenter' &&
+      // Ignore hover events when the mouse is down
+      (e.buttons !== 0 ||
+        // Safari on iOS 26+ fires pointerenter with type 'touch' sometimes
+        // when showing elements. This causes PressTips to be shown initially
+        // and get stuck open, and pointereenter doesn't make much sense for
+        // touch anyway.
+        e.pointerType === 'touch')
+    ) {
+      return;
+    }
+    e.preventDefault();
+    // If we're already hovering, don't start hovering again
+    if (
+      startEvent.current &&
+      // Safari, at least, fires both pointerenter and pointerdown at the same time. We want the pointerdown event.
+      !(startEvent.current === 'pointerenter' && performance.now() - touchStartTime.current < 10)
+    ) {
+      return;
+    }
+
+    clearTimeout(timer.current);
+    // Save the event type that initiated the hover
+    startEvent.current = e.type as 'pointerenter' | 'pointerdown';
+
+    // Record the start timestamp of the gesture
+    touchStartTime.current = performance.now();
+    // Hover over should wait for a shorter delay than a press
+    const hoverDelay = e.type === 'pointerenter' ? hoverTime : pressTime;
+    // Start a timer to show the pressTip
     timer.current = window.setTimeout(() => {
       setOpen(true);
-    }, 100);
-  };
+    }, hoverDelay);
+  }, []);
 
-  const press = (e) => {
-    allowClickThrough || e.preventDefault();
-    allowClickThrough || e.stopPropagation();
-    setOpen(true);
-  };
-
+  // Stop the hover timer when the component unmounts
   useEffect(() => () => clearTimeout(timer.current), []);
+
+  // When the tooltip was opened by pressing (pointerdown), prevent the click event when
+  // we end the gesture. If the presstip was opened via hovering we want to allow clicks
+  // through.
+  const absorbClick = useCallback((e: React.MouseEvent) => {
+    if (performance.now() < suppressClickUntil.current) {
+      e.stopPropagation();
+    }
+  }, []);
 
   return (
     <Control
       open={open}
       triggerRef={ref}
-      onMouseEnter={hover}
-      onMouseDown={press}
-      onTouchStart={press}
-      onMouseUp={closeToolTip}
-      onMouseLeave={closeToolTip}
-      onTouchEnd={closeToolTip}
-      {...rest}
+      onPointerEnter={hover}
+      onPointerDown={hover}
+      onPointerLeave={closeToolTip}
+      onPointerUp={closeToolTip}
+      onPointerCancel={closeToolTip}
+      /* onLostPointerCapture closes the tooltip when dragging within our
+      SheetHorizontalScrollContainer which handles pointer events itself -
+      without this, tooltips never close after the scroller steals the pointer
+      capture. */
+      onLostPointerCapture={closeToolTip}
+      onClick={absorbClick}
+      {...props}
     />
   );
 }
-
-PressTip.Control = Control;
-
-export default PressTip;

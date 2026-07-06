@@ -1,26 +1,34 @@
+import { D1_StatHashes, D1BucketHashes } from 'app/search/d1-known-values';
+import { isEmpty, mapValues, uniqBy } from 'app/utils/collections';
+import { itemCanBeEquippedBy } from 'app/utils/item-utils';
+import { BucketHashes } from 'data/d2/generated-enums';
+import { maxBy } from 'es-toolkit';
+import { D1Item } from '../../inventory/item-types';
+import { D1Store, DimStore } from '../../inventory/store-types';
+import { D1StatHashes } from '../d1-manifest-types';
+import { Vendor } from '../vendors/vendor.service';
 import {
-  D1ItemWithNormalStats,
-  ArmorTypes,
-  ItemBucket,
-  SetType,
   ArmorSet,
+  ArmorTypes,
+  D1ItemWithNormalStats,
+  ItemBucket,
   LockedPerkHash,
+  SetType,
 } from './types';
 
-import { D1Item } from '../../inventory/item-types';
-
-import _ from 'lodash';
-import { DimStore, D1Store } from '../../inventory/store-types';
-import { Vendor } from '../vendors/vendor.service';
+export interface ItemWithBonus {
+  item: D1ItemWithNormalStats;
+  bonusType: string;
+}
 
 function getBonusType(armorpiece: D1ItemWithNormalStats): string {
   if (!armorpiece.normalStats) {
     return '';
   }
   return (
-    (armorpiece.normalStats[144602215].bonus > 0 ? 'int ' : '') +
-    (armorpiece.normalStats[1735777505].bonus > 0 ? 'dis ' : '') +
-    (armorpiece.normalStats[4244567218].bonus > 0 ? 'str' : '')
+    (armorpiece.normalStats[D1StatHashes.Intellect].bonus > 0 ? 'int ' : '') +
+    (armorpiece.normalStats[D1StatHashes.Discipline].bonus > 0 ? 'dis ' : '') +
+    (armorpiece.normalStats[D1StatHashes.Strength].bonus > 0 ? 'str' : '')
   );
 }
 
@@ -29,18 +37,18 @@ function getBestItem(
   stats: number[],
   type: string,
   scaleTypeArg: 'base' | 'scaled',
-  nonExotic = false
-) {
+  nonExotic = false,
+): ItemWithBonus {
   // for specific armor (Helmet), look at stats (int/dis), return best one.
   return {
-    item: _.maxBy(armor, (o) => {
+    item: maxBy(armor, (o) => {
       if (nonExotic && o.isExotic) {
         return 0;
       }
       let bonus = 0;
       let total = 0;
       for (const stat of stats) {
-        const scaleType = o.tier === 'Rare' ? 'base' : scaleTypeArg;
+        const scaleType = o.rarity === 'Rare' ? 'base' : scaleTypeArg;
         if (o.normalStats) {
           const normalStats = o.normalStats[stat];
           total += normalStats[scaleType];
@@ -54,58 +62,47 @@ function getBestItem(
 }
 
 export function calcArmorStats(
-  pieces: {
-    item: D1ItemWithNormalStats;
-    bonusType: string;
-  }[],
+  pieces: ItemWithBonus[],
   stats: ArmorSet['stats'],
-  scaleTypeArg: 'base' | 'scaled'
+  scaleTypeArg: 'base' | 'scaled',
 ) {
   for (const armor of pieces) {
-    const int = armor.item.normalStats![144602215];
-    const dis = armor.item.normalStats![1735777505];
-    const str = armor.item.normalStats![4244567218];
+    const int = armor.item.normalStats![D1StatHashes.Intellect];
+    const dis = armor.item.normalStats![D1StatHashes.Discipline];
+    const str = armor.item.normalStats![D1StatHashes.Strength];
 
-    const scaleType = armor.item.tier === 'Rare' ? 'base' : scaleTypeArg;
+    const scaleType = armor.item.rarity === 'Rare' ? 'base' : scaleTypeArg;
 
     // Mark of the Sunforged, Stormcaller Bond and Nightstalker cloak have special fixed stats
     // that do not scale correctly as the scaling is currently implemented.
     // See https://github.com/DestinyItemManager/DIM/issues/5191 for details
     if ([2820418554, 2122538507, 2300914892].includes(armor.item.hash)) {
-      stats[144602215].value += int['base'];
+      stats[D1StatHashes.Intellect].value += int.base;
     } else {
-      stats[144602215].value += int[scaleType];
-      stats[1735777505].value += dis[scaleType];
-      stats[4244567218].value += str[scaleType];
+      stats[D1StatHashes.Intellect].value += int[scaleType];
+      stats[D1StatHashes.Discipline].value += dis[scaleType];
+      stats[D1StatHashes.Strength].value += str[scaleType];
     }
 
     switch (armor.bonusType) {
       case 'int':
-        stats[144602215].value += int.bonus;
+        stats[D1StatHashes.Intellect].value += int.bonus;
         break;
       case 'dis':
-        stats[1735777505].value += dis.bonus;
+        stats[D1StatHashes.Discipline].value += dis.bonus;
         break;
       case 'str':
-        stats[4244567218].value += str.bonus;
+        stats[D1StatHashes.Strength].value += str.bonus;
         break;
     }
   }
 }
 
 export function getBonusConfig(armor: ArmorSet['armor']): { [armorType in ArmorTypes]: string } {
-  return {
-    Helmet: armor.Helmet.bonusType,
-    Gauntlets: armor.Gauntlets.bonusType,
-    Chest: armor.Chest.bonusType,
-    Leg: armor.Leg.bonusType,
-    ClassItem: armor.ClassItem.bonusType,
-    Artifact: armor.Artifact.bonusType,
-    Ghost: armor.Ghost.bonusType,
-  };
+  return mapValues(armor, (armorPiece) => armorPiece.bonusType);
 }
 
-export function genSetHash(armorPieces) {
+export function genSetHash(armorPieces: ItemWithBonus[]) {
   let hash = '';
   for (const armorPiece of armorPieces) {
     hash += armorPiece.item.id;
@@ -121,25 +118,25 @@ export function getBestArmor(
   lockedPerks: { [armorType in ArmorTypes]: LockedPerkHash },
   scaleTypeArg: 'base' | 'scaled',
   includeVendors = false,
-  fullMode = false
+  fullMode = false,
 ) {
   const statHashes = [
-    { stats: [144602215, 1735777505], type: 'intdis' },
-    { stats: [144602215, 4244567218], type: 'intstr' },
-    { stats: [1735777505, 4244567218], type: 'disstr' },
-    { stats: [144602215], type: 'int' },
-    { stats: [1735777505], type: 'dis' },
-    { stats: [4244567218], type: 'str' },
+    { stats: [D1StatHashes.Intellect, D1StatHashes.Discipline], type: 'intdis' },
+    { stats: [D1StatHashes.Intellect, D1StatHashes.Strength], type: 'intstr' },
+    { stats: [D1StatHashes.Discipline, D1StatHashes.Strength], type: 'disstr' },
+    { stats: [D1StatHashes.Intellect], type: 'int' },
+    { stats: [D1StatHashes.Discipline], type: 'dis' },
+    { stats: [D1StatHashes.Strength], type: 'str' },
   ];
-  const armor = {};
-  let best: { item: D1ItemWithNormalStats; bonusType: string }[] = [];
+  const armor: Partial<Record<ArmorTypes, ItemWithBonus[]>> = {};
+  let best: { item: D1ItemWithNormalStats; bonusType: string }[];
   let curbest;
-  let bestCombs;
-  let armortype: ArmorTypes;
+  let bestCombs: { item: D1ItemWithNormalStats; bonusType: string }[];
 
   const excludedIndices = new Set(excluded.map((i) => i.index));
 
-  for (armortype in bucket) {
+  for (const armortypestr in bucket) {
+    const armortype: ArmorTypes = parseInt(armortypestr, 10);
     const combined = includeVendors
       ? bucket[armortype].concat(vendorBucket[armortype])
       : bucket[armortype];
@@ -149,10 +146,10 @@ export function getBestArmor(
     } else {
       best = [];
 
-      let hasPerks: (item: D1Item) => boolean = () => true;
+      let hasPerks: (item: D1Item) => boolean = (_i) => true;
 
-      if (!_.isEmpty(lockedPerks[armortype])) {
-        const lockedPerkKeys = Object.keys(lockedPerks[armortype]);
+      if (!isEmpty(lockedPerks[armortype])) {
+        const lockedPerkKeys = Object.keys(lockedPerks[armortype]).map((k) => parseInt(k, 10));
         const andPerkHashes = lockedPerkKeys
           .filter((perkHash) => lockedPerks[armortype][perkHash].lockType === 'and')
           .map(Number);
@@ -164,51 +161,55 @@ export function getBestArmor(
           if (!orPerkHashes.length && !andPerkHashes.length) {
             return true;
           }
-          function matchNode(perkHash) {
+          function matchNode(perkHash: number) {
             return item.talentGrid?.nodes.some((n) => n.hash === perkHash);
           }
           return Boolean(
             (orPerkHashes.length && orPerkHashes.some(matchNode)) ||
-              (andPerkHashes.length && andPerkHashes.every(matchNode))
+            (andPerkHashes.length && andPerkHashes.every(matchNode)),
           );
         };
       }
 
       // Filter out excluded and non-wanted perks
       const filtered = combined.filter(
-        (item) => !excludedIndices.has(item.index) && hasPerks(item) // Not excluded and has the correct locked perks
+        (item) => !excludedIndices.has(item.index) && hasPerks(item), // Not excluded and has the correct locked perks
       );
 
-      statHashes.forEach((hash, index) => {
+      if (filtered.length === 0) {
+        continue; // No items in this bucket
+      }
+
+      for (const [index, hash] of statHashes.entries()) {
         if (!fullMode && index > 2) {
-          return;
+          continue;
         }
 
         curbest = getBestItem(filtered, hash.stats, hash.type, scaleTypeArg);
         best.push(curbest);
         // add the best -> if best is exotic -> get best legendary
-        if (curbest.item.isExotic && armortype !== 'ClassItem') {
+        if (curbest.item.isExotic && armortype !== BucketHashes.ClassArmor) {
           best.push(getBestItem(filtered, hash.stats, hash.type, scaleTypeArg, true));
         }
-      });
+      }
     }
 
     bestCombs = [];
-    _.uniqBy(best, (o) => o.item.index).forEach((obj) => {
+    for (const obj of uniqBy(best, (o) => o.item.index)) {
       obj.bonusType = getBonusType(obj.item);
       if (obj.bonusType === '') {
         bestCombs.push({ item: obj.item, bonusType: '' });
       }
-      if (obj.bonusType.indexOf('int') > -1) {
+      if (obj.bonusType.includes('int')) {
         bestCombs.push({ item: obj.item, bonusType: 'int' });
       }
-      if (obj.bonusType.indexOf('dis') > -1) {
+      if (obj.bonusType.includes('dis')) {
         bestCombs.push({ item: obj.item, bonusType: 'dis' });
       }
-      if (obj.bonusType.indexOf('str') > -1) {
+      if (obj.bonusType.includes('str')) {
         bestCombs.push({ item: obj.item, bonusType: 'str' });
       }
-    });
+    }
     armor[armortype] = bestCombs;
   }
   return armor;
@@ -216,72 +217,66 @@ export function getBestArmor(
 
 export function getActiveHighestSets(
   setMap: { [setHash: number]: SetType },
-  activeSets: string
+  activeSets: string,
 ): SetType[] {
   let count = 0;
   const topSets: SetType[] = [];
-  Object.values(setMap).forEach((setType) => {
+  for (const setType of Object.values(setMap)) {
     if (count >= 10) {
-      return;
+      continue;
     }
 
     if (setType.tiers[activeSets]) {
       topSets.push(setType);
       count += 1;
     }
-  });
+  }
   return topSets;
 }
 
-export function mergeBuckets<T>(
-  bucket1: { [armorType in ArmorTypes]: T },
-  bucket2: { [armorType in ArmorTypes]: T }
-): { [armorType in ArmorTypes]: T } {
-  const merged = {};
-  Object.keys(bucket1).forEach((type) => {
-    merged[type] = bucket1[type].concat(bucket2[type]);
-  });
-  return merged as { [armorType in ArmorTypes]: T };
-}
-
-export function getActiveBuckets<T>(
+export function mergeBuckets<T extends any[]>(
   bucket1: { [armorType in ArmorTypes]: T },
   bucket2: { [armorType in ArmorTypes]: T },
-  merge: boolean
-): { [armorType in ArmorTypes]: T } {
-  // Merge both buckets or return bucket1 if merge is false
-  return merge ? mergeBuckets(bucket1, bucket2) : bucket1;
+) {
+  const merged: Partial<{ [armorType in ArmorTypes]: T }> = {};
+  for (const [type, bucket] of Object.entries(bucket1)) {
+    const armorType: ArmorTypes = parseInt(type, 10);
+    merged[armorType] = bucket.concat(bucket2[armorType]) as T;
+  }
+  return merged as { [armorType in ArmorTypes]: T };
 }
 
 export function loadVendorsBucket(
   currentStore: DimStore,
   vendors?: {
     [vendorHash: number]: Vendor;
-  }
+  },
 ): ItemBucket {
   if (!vendors) {
     return {
-      Helmet: [],
-      Gauntlets: [],
-      Chest: [],
-      Leg: [],
-      ClassItem: [],
-      Artifact: [],
-      Ghost: [],
+      [BucketHashes.Helmet]: [],
+      [BucketHashes.Gauntlets]: [],
+      [BucketHashes.ChestArmor]: [],
+      [BucketHashes.LegArmor]: [],
+      [BucketHashes.ClassArmor]: [],
+      [D1BucketHashes.Artifact]: [],
+      [BucketHashes.Ghost]: [],
     };
   }
-  return _.map(vendors, (vendor) =>
-    getBuckets(
-      vendor.allItems
-        .filter(
-          (i) =>
-            i.item.stats &&
-            i.item.primStat?.statHash === 3897883278 &&
-            i.item.canBeEquippedBy(currentStore)
-        )
-        .map((i) => i.item)
+  return Object.values(vendors)
+    .map((vendor) =>
+      getBuckets(
+        vendor.allItems
+          .filter(
+            (i) =>
+              i.item.stats &&
+              i.item.primaryStat?.statHash === D1_StatHashes.Defense &&
+              itemCanBeEquippedBy(i.item, currentStore),
+          )
+          .map((i) => i.item),
+      ),
     )
-  ).reduce(mergeBuckets);
+    .reduce(mergeBuckets);
 }
 
 export function loadBucket(currentStore: DimStore, stores: D1Store[]): ItemBucket {
@@ -289,36 +284,57 @@ export function loadBucket(currentStore: DimStore, stores: D1Store[]): ItemBucke
     .map((store) =>
       getBuckets(
         store.items.filter(
-          (i) => i.stats && i.primStat?.statHash === 3897883278 && i.canBeEquippedBy(currentStore)
-        )
-      )
+          (i) =>
+            i.stats &&
+            i.primaryStat?.statHash === D1_StatHashes.Defense &&
+            itemCanBeEquippedBy(i, currentStore),
+        ),
+      ),
     )
     .reduce(mergeBuckets);
 }
 
 function getBuckets(items: D1Item[]): ItemBucket {
   return {
-    Helmet: items.filter((item) => item.type === 'Helmet').map(normalizeStats),
-    Gauntlets: items.filter((item) => item.type === 'Gauntlets').map(normalizeStats),
-    Chest: items.filter((item) => item.type === 'Chest').map(normalizeStats),
-    Leg: items.filter((item) => item.type === 'Leg').map(normalizeStats),
-    ClassItem: items.filter((item) => item.type === 'ClassItem').map(normalizeStats),
-    Artifact: items.filter((item) => item.type === 'Artifact').map(normalizeStats),
-    Ghost: items.filter((item) => item.type === 'Ghost').map(normalizeStats),
+    [BucketHashes.Helmet]: items
+      .filter((item) => item.bucket.hash === BucketHashes.Helmet)
+      .map(normalizeStats),
+    [BucketHashes.Gauntlets]: items
+      .filter((item) => item.bucket.hash === BucketHashes.Gauntlets)
+      .map(normalizeStats),
+    [BucketHashes.ChestArmor]: items
+      .filter((item) => item.bucket.hash === BucketHashes.ChestArmor)
+      .map(normalizeStats),
+    [BucketHashes.LegArmor]: items
+      .filter((item) => item.bucket.hash === BucketHashes.LegArmor)
+      .map(normalizeStats),
+    [BucketHashes.ClassArmor]: items
+      .filter((item) => item.bucket.hash === BucketHashes.ClassArmor)
+      .map(normalizeStats),
+    [D1BucketHashes.Artifact]: items
+      .filter((item) => item.bucket.hash === D1BucketHashes.Artifact)
+      .map(normalizeStats),
+    [BucketHashes.Ghost]: items
+      .filter((item) => item.bucket.hash === BucketHashes.Ghost)
+      .map(normalizeStats),
   };
 }
 
-function normalizeStats(item: D1ItemWithNormalStats) {
-  item.normalStats = {};
-  for (const stat of item.stats!) {
-    item.normalStats[stat.statHash] = {
-      statHash: stat.statHash,
-      base: stat.base,
-      scaled: stat.scaled ? stat.scaled.min : 0,
-      bonus: stat.bonus,
-      split: stat.split || 0,
-      qualityPercentage: stat.qualityPercentage ? stat.qualityPercentage.min : 0,
-    };
+function normalizeStats(item: D1ItemWithNormalStats): D1ItemWithNormalStats {
+  // Build the normalStats map locally and return a copy rather than mutating the
+  // item in place: items come from the (frozen) Redux store and are not extensible.
+  const normalStats: NonNullable<D1ItemWithNormalStats['normalStats']> = {};
+  if (item.stats) {
+    for (const stat of item.stats) {
+      normalStats[stat.statHash] = {
+        statHash: stat.statHash,
+        base: stat.base,
+        scaled: stat.scaled ? stat.scaled.min : 0,
+        bonus: stat.bonus,
+        split: stat.split || 0,
+        qualityPercentage: stat.qualityPercentage ? stat.qualityPercentage.min : 0,
+      };
+    }
   }
-  return item;
+  return { ...item, normalStats };
 }

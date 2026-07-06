@@ -1,13 +1,13 @@
+import { CacheableResponsePlugin } from 'workbox-cacheable-response';
+import { clientsClaim } from 'workbox-core';
+import { ExpirationPlugin } from 'workbox-expiration';
 import {
+  cleanupOutdatedCaches,
   createHandlerBoundToURL,
   precacheAndRoute,
-  cleanupOutdatedCaches,
 } from 'workbox-precaching';
-import { clientsClaim } from 'workbox-core';
 import { NavigationRoute, registerRoute } from 'workbox-routing';
 import { CacheFirst } from 'workbox-strategies';
-import { ExpirationPlugin } from 'workbox-expiration';
-import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
 self.__precacheManifest = self.__WB_MANIFEST.concat(self.__precacheManifest || []);
 
@@ -27,15 +27,21 @@ registerRoute(
       new CacheableResponsePlugin({ statuses: [0, 200] }),
     ],
   }),
-  'GET'
+  'GET',
 );
 
-// Since we're a single page app, route all navigations to /index.html
-const handler = createHandlerBoundToURL('/index.html');
+// Since we're a single page app, route all navigation to /index.html
+const handler = createHandlerBoundToURL(`${$PUBLIC_PATH}index.html`);
 const navigationRoute = new NavigationRoute(handler, {
-  // These have their own pages (return.html and gdrive-return.html)
+  // These have their own pages (return.html)
   // This regex matches on query string too, so no anchors!
-  denylist: [/return\.html/, /\.well-known/, /\.(json|wasm|js|css|png|jpg|map)(\.(gz|br))?$/],
+  denylist: [
+    /return\.html/,
+    /backup\.html/,
+    /\.well-known/,
+    /\.(php|json|wasm|js|css|png|jpg|map)(\.(gz|br))?$/,
+    /\/data\/d1\/manifests\//,
+  ],
 });
 registerRoute(navigationRoute);
 

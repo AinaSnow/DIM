@@ -1,38 +1,41 @@
-# This workflow runs whenever dim.json is updated on the master branch
+# This workflow runs whenever locale/en.json is updated on the master branch
 # It updates crowdin with new translation strings
-# and notifies the #i18n @i18n in Discord of the new translations.
 name: i18n upload bot
+
 on:
+  workflow_dispatch:
   push:
     paths:
-      - "src/locale/dim.json"
+      - "src/locale/en.json"
     branches: [master]
 
 jobs:
-  build:
+  upload:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout DIM
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
 
-      - name: Sort dim.json
-        run: dimJSON="$(jq -S . src/locale/dim.json)" && echo "${dimJSON}" > src/locale/dim.json
+      - name: Sort en.json
+        run: dimJSON="$(jq -S . src/locale/en.json)" && echo "${dimJSON}" > src/locale/en.json
 
-      - name: Upload updated dim.json to crowdin
-        uses: crowdin/github-action@1.0.4
+      - name: Upload updated en.json to crowdin
+        uses: crowdin/github-action@v2.16.3
         with:
           upload_sources: true
           upload_translations: false
-          source: src/locale/dim.json
-          translation: src/locale/%android_code%/dim.json
           project_id: ${{ secrets.CROWDIN_PROJECT_ID }}
           token: ${{ secrets.CROWDIN_PERSONAL_TOKEN }}
         env:
+          CROWDIN_PROJECT_ID: ${{ secrets.CROWDIN_PROJECT_ID }}
+          CROWDIN_PERSONAL_TOKEN: ${{ secrets.CROWDIN_PERSONAL_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Discord notification
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_I18N_WEBHOOK }}
-        uses: Ilshidur/action-discord@master
+      - name: Check for changes
+        uses: dorny/paths-filter@v4
+        id: filter
         with:
-          args: "<@&622449489008918548> - New translations have been added to Crowdin."
+          base: HEAD
+          filters: |
+            changed:
+              - 'src/locale/en.json'

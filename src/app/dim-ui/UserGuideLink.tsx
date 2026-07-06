@@ -1,9 +1,8 @@
-import React from 'react';
+import { t } from 'app/i18next-t';
+import { userGuideUrl } from 'app/shell/links';
+import clsx from 'clsx';
 import { AppIcon, helpIcon } from '../shell/icons';
 import ExternalLink from './ExternalLink';
-import { t } from 'app/i18next-t';
-import styles from './UserGuideLink.m.scss';
-import clsx from 'clsx';
 
 /**
  * Link to a specific topic in the DIM User Guide wiki.
@@ -21,12 +20,11 @@ export default function UserGuideLink({
     return null;
   }
 
-  const link = `https://destinyitemmanager.fandom.com/wiki/${topic}`;
+  const link = userGuideUrl(topic);
 
   return (
-    <ExternalLink href={link} className={clsx(styles.link, className)}>
-      <AppIcon icon={helpIcon} />
-      {title || t('General.UserGuideLink')}
+    <ExternalLink href={link} className={clsx('dim-button', className)}>
+      <AppIcon icon={helpIcon} /> {title || t('General.UserGuideLink')}
     </ExternalLink>
   );
 }

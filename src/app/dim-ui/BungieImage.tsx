@@ -1,5 +1,5 @@
-import React from 'react';
 import clsx from 'clsx';
+import React, { memo } from 'react';
 
 /**
  * A relative path to a Bungie.net image asset.
@@ -13,7 +13,7 @@ export type BungieImageProps = Omit<React.ImgHTMLAttributes<HTMLImageElement>, '
 /**
  * An image tag that links its src to bungie.net. Other props pass through to the underlying image.
  */
-export default React.memo(function BungieImage(props: BungieImageProps) {
+export default memo(function BungieImage(props: BungieImageProps) {
   const { src, ...otherProps } = props;
   return (
     <img
@@ -28,10 +28,34 @@ export default React.memo(function BungieImage(props: BungieImageProps) {
 /**
  * Produce a style object that sets the background image to an image on bungie.net.
  */
-export function bungieBackgroundStyle(src: BungieImagePath, additionalBackground?: string) {
-  additionalBackground = additionalBackground ? `, ${additionalBackground}` : '';
+export function bungieBackgroundStyle(src: BungieImagePath) {
   return {
-    backgroundImage: `url("${bungieNetPath(src)}")${additionalBackground}`,
+    backgroundImage: `url("${bungieNetPath(src)}")`,
+  };
+}
+
+/**
+ * Produce a style object that sets the background image to an image on bungie.net.
+ */
+export function bungieBackgroundStyles(src: BungieImagePath[]) {
+  if (src.length === 0) {
+    return {};
+  }
+  return {
+    backgroundImage: src.map((src) => `url("${bungieNetPath(src)}")`).join(', '),
+  };
+}
+
+/**
+ * Produce a style object that sets the background image to an image on bungie.net.
+ *
+ * Has extra settings because sometimes life throws bad CSS choices your way
+ */
+export function bungieBackgroundStyleAdvanced(src: BungieImagePath, stacks = 1) {
+  const backgrounds = Array(stacks).fill(`url("${bungieNetPath(src)}")`);
+
+  return {
+    backgroundImage: backgrounds.join(', '),
   };
 }
 

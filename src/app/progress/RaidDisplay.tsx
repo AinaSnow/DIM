@@ -1,27 +1,31 @@
-import {
-  DestinyDisplayPropertiesDefinition,
-  DestinyMilestoneChallengeActivity,
-} from 'bungie-api-ts/destiny2';
-import React from 'react';
-import BungieImage from '../dim-ui/BungieImage';
-import CompletionCheckbox from './CompletionCheckbox';
-import { D2ManifestDefinitions } from '../destiny2/d2-definitions';
-import { ActivityModifier } from './ActivityModifier';
-import LoadoutRequirementModifier from './LoadoutRequirementModifier';
+import { useD2Definitions } from 'app/manifest/selectors';
 import {
   ARMSMASTER_ACTIVITY_MODIFIER,
   ENCOUNTERS_COMPLETED_OBJECTIVE,
 } from 'app/search/d2-known-values';
-
-interface Props {
-  displayProperties: DestinyDisplayPropertiesDefinition;
-  children?: React.ReactNode;
-}
+import {
+  DestinyDisplayPropertiesDefinition,
+  DestinyMilestoneChallengeActivity,
+} from 'bungie-api-ts/destiny2';
+import clsx from 'clsx';
+import React from 'react';
+import BungieImage from '../dim-ui/BungieImage';
+import { ActivityModifier } from './ActivityModifier';
+import {
+  ObjectiveCheckbox,
+  ObjectiveDescription,
+  ObjectiveProgress,
+  ObjectiveRow,
+} from './Objective';
+import * as styles from './RaidDisplay.m.scss';
 
 /**
  * Outer wrapper of a Raid type (example: EoW) with icon
  */
-export function RaidDisplay(props: Props) {
+export function RaidDisplay(props: {
+  displayProperties: DestinyDisplayPropertiesDefinition;
+  children?: React.ReactNode;
+}) {
   const { displayProperties, children } = props;
 
   return (
@@ -31,7 +35,7 @@ export function RaidDisplay(props: Props) {
           <BungieImage className="milestone-img" src={displayProperties.icon} />
         )}
       </div>
-      <div className="milestone-info">{children}</div>
+      <div className={clsx('milestone-info', styles.raidTiers)}>{children}</div>
     </div>
   );
 }
@@ -44,14 +48,16 @@ export function RaidDisplay(props: Props) {
  * which offers loot 1x per week, whose completion is tracked by the game & API
  */
 export function RaidActivity({
-  defs,
   activity,
   displayName,
+  hideName,
 }: {
-  defs: D2ManifestDefinitions;
   activity: DestinyMilestoneChallengeActivity;
-  displayName: string;
+  /** an override label to use instead of the activity's name */
+  displayName?: string;
+  hideName?: boolean;
 }) {
+  const defs = useD2Definitions()!;
   // a manifest-localized string describing raid segments with loot. "Encounters completed"
   const encountersString = defs.Objective.get(ENCOUNTERS_COMPLETED_OBJECTIVE).progressDescription;
 
@@ -62,27 +68,28 @@ export function RaidActivity({
   const activityName = displayName || activityDef.displayProperties.name;
 
   return (
-    <div className="raid-tier">
-      <span className="milestone-name">{activityName}</span>
-      <div className="quest-modifiers">
-        {activity.modifierHashes?.map(
-          (modifierHash) =>
-            modifierHash !== ARMSMASTER_ACTIVITY_MODIFIER && (
-              <ActivityModifier key={modifierHash} modifierHash={modifierHash} defs={defs} />
-            )
-        )}
-        <LoadoutRequirementModifier defs={defs} activity={activity} />
-      </div>
-      <div className="quest-objectives">
-        <div className="objective-row objective-boolean">
+    <div className={styles.raidActivity}>
+      {!hideName && <span className="milestone-name">{activityName}</span>}
+      {activity.modifierHashes?.map(
+        (modifierHash) =>
+          modifierHash !== ARMSMASTER_ACTIVITY_MODIFIER && (
+            <ActivityModifier key={modifierHash} modifierHash={modifierHash} small />
+          ),
+      )}
+      {activity.phases && activity.phases.length > 0 && (
+        <ObjectiveRow
+          complete={activity.phases.every((p) => p.complete)}
+          className={styles.questObjectives}
+          boolean
+        >
           {activity.phases?.map((phase) => (
-            <CompletionCheckbox key={phase.phaseHash} completed={phase.complete} />
+            <ObjectiveCheckbox key={phase.phaseHash} completed={phase.complete} />
           ))}
-          <div className="objective-progress">
-            <div className="objective-description">{encountersString}</div>
-          </div>
-        </div>
-      </div>
+          <ObjectiveProgress>
+            <ObjectiveDescription description={encountersString} />
+          </ObjectiveProgress>
+        </ObjectiveRow>
+      )}
     </div>
   );
 }

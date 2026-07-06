@@ -1,46 +1,10 @@
-@import '../variables.scss';
-
-.select {
-  display: flex;
-  justify-content: space-between;
-}
-
-.horizontal {
-  composes: select;
-  flex-direction: row;
-  flex-wrap: wrap;
-
-  .tile {
-    margin-right: 8px;
-    &:last-child {
-      margin-right: 0;
-    }
-  }
-
-  @include phone-portrait {
-    justify-content: center;
-  }
-}
-
-.vertical {
-  composes: select;
-  flex-direction: column;
-  align-items: center;
-
-  .tile {
-    margin-bottom: 4px;
-    &:last-child {
-      margin-bottom: 0;
-    }
-  }
-}
+@use '../variables.scss' as *;
 
 .tile {
-  height: 46px;
-  min-width: 230px;
+  height: $emblem-height;
+
   @include phone-portrait {
-    min-width: 260px;
-    margin-bottom: 6px;
+    min-width: $emblem-width;
 
     > div {
       margin: 0 5px;
@@ -48,27 +12,35 @@
   }
 }
 
-.unselected {
+.vertical {
+  composes: flexColumn from './common.m.scss';
+  gap: 8px;
+}
+
+// The > * > * is so we don't dim out the hover border
+.unselected > * > * {
+  filter: grayscale(0.6);
   opacity: 0.4;
 }
 
-.pager {
-  overflow: hidden;
-  > div {
-    max-width: 250px;
-    @include phone-portrait {
-      max-width: 260px;
-    }
+.frame {
+  max-width: 250px;
+  margin: 8px auto;
+  overflow: visible !important;
+  position: relative;
 
-    margin: 0 auto;
-    overflow: visible !important;
+  @include phone-portrait {
+    max-width: 260px;
   }
 }
 
-.frame {
-  overflow: visible !important;
-}
-
 .track {
-  overflow: visible !important;
+  display: block;
+  // Don't let the browser handle touches, we'll do it ourselves
+  touch-action: none;
+
+  > * {
+    display: inline-block;
+    vertical-align: top;
+  }
 }

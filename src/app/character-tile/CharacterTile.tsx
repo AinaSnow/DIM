@@ -1,61 +1,110 @@
-import React from 'react';
-import { useSelector } from 'react-redux';
-import clsx from 'clsx';
+import FractionalPowerLevel from 'app/dim-ui/FractionalPowerLevel';
+import type { DimStore, DimTitle } from 'app/inventory/store-types';
+import { allPowerLevelsSelector, powerLevelSelector } from 'app/inventory/store/selectors';
 import { AppIcon, powerActionIcon } from 'app/shell/icons';
-import { isPhonePortraitSelector } from 'app/inventory/selectors';
-import type { DimStore, DimVault } from 'app/inventory/store-types';
+import { useIsPhonePortrait } from 'app/shell/selectors';
 import VaultCapacity from 'app/store-stats/VaultCapacity';
-import './CharacterTile.scss';
+import { RootState } from 'app/store/types';
+import clsx from 'clsx';
+import { FontGlyphs } from 'data/font/d2-font-glyphs';
+import { memo } from 'react';
+import { useSelector } from 'react-redux';
+import * as styles from './CharacterTile.m.scss';
 
-const CharacterEmblem = ({ store }: { store: DimStore }) => (
-  <div
-    className={clsx('emblem', { vault: store.isVault })}
-    style={{ backgroundImage: `url("${store.icon}")` }}
-  />
-);
-
-function isVault(store: DimStore): store is DimVault {
-  return store.isVault;
-}
+const gildedIcon = String.fromCodePoint(FontGlyphs.gilded_title);
 
 /**
  * Render a basic character tile without any event handlers
  * This is currently being shared between StoreHeading and CharacterTileButton
  */
-export default function CharacterTile({ store }: { store: DimStore }) {
-  const maxTotalPower = Math.floor(store.stats?.maxTotalPower?.value || store.powerLevel);
-  const isPhonePortrait = useSelector(isPhonePortraitSelector);
+export default memo(function CharacterTile({ store }: { store: DimStore }) {
+  const isPhonePortrait = useIsPhonePortrait();
+
+  if (store.isVault) {
+    return <VaultTile store={store} />;
+  }
 
   return (
-    <div className="character-tile">
-      <div className="background" style={{ backgroundImage: `url("${store.background}")` }} />
-      <CharacterEmblem store={store} />
-      <div className="character-text">
-        <div className="top">
-          <div className="class">{store.className}</div>
-          {!store.isVault && (
-            <>
-              <div className="powerLevel">
-                <AppIcon icon={powerActionIcon} />
-                {store.powerLevel}
-              </div>
-              {$featureFlags.unstickyStats && isPhonePortrait && (
-                <div className="maxTotalPower">/ {maxTotalPower}</div>
-              )}
-            </>
-          )}
-        </div>
-        <div className="bottom">
-          {isVault(store) ? (
-            $featureFlags.unstickyStats && isPhonePortrait && <VaultCapacity store={store} />
-          ) : (
-            <>
-              <div className="race-gender">{store.genderRace}</div>
-              {store.isDestiny1() && store.level < 40 && <div className="level">{store.level}</div>}
-            </>
-          )}
-        </div>
+    <div
+      className={clsx(styles.characterTile, {
+        [styles.current]: store.current,
+      })}
+      style={{
+        backgroundImage: `url("${store.background}")`,
+        backgroundColor: store.color
+          ? `rgb(${Math.round(store.color.red)}, ${Math.round(store.color.green)}, ${Math.round(
+              store.color.blue,
+            )}`
+          : 'black',
+      }}
+    >
+      {store.destinyVersion === 1 && (
+        <img className={styles.emblem} src={store.icon} height={40} width={40} />
+      )}
+      <div className={styles.class}>{store.className}</div>
+      <div className={styles.bottom}>
+        {store.titleInfo ? <Title titleInfo={store.titleInfo} /> : store.race}
       </div>
+      <div className={clsx(styles.powerLevel, styles.bigPowerLevel)}>
+        <AppIcon icon={powerActionIcon} />
+        {store.powerLevel}
+      </div>
+      {isPhonePortrait && <MaxTotalPower store={store} />}
     </div>
+  );
+});
+
+function VaultTile({ store }: { store: DimStore }) {
+  const isPhonePortrait = useIsPhonePortrait();
+  const powerLevel = Object.values(useSelector(allPowerLevelsSelector))[0];
+
+  return (
+    <div className={styles.vaultTile}>
+      <img className={styles.vaultEmblem} src={store.icon} height={40} width={40} alt="" />
+      <div className={styles.vaultName}>{store.className}</div>
+      {!isPhonePortrait && (
+        <div className={clsx(styles.powerLevel, styles.bigPowerLevel)}>
+          <AppIcon icon={powerActionIcon} />
+          <FractionalPowerLevel power={powerLevel.dropPower} />
+        </div>
+      )}
+      {isPhonePortrait && (
+        <div className={styles.vaultCapacity}>
+          <VaultCapacity />
+          <span className={clsx(styles.powerLevel, styles.smallPowerLevel)}>
+            <AppIcon icon={powerActionIcon} />
+          </span>
+          <span className={clsx(styles.powerLevel, styles.smallPowerLevel)}>
+            <FractionalPowerLevel power={powerLevel.dropPower} />
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MaxTotalPower({ store }: { store: DimStore }) {
+  const maxTotalPower = useSelector(
+    (state: RootState) => powerLevelSelector(state, store.id)?.maxTotalPower,
+  );
+  const floorTotalPower = Math.floor(maxTotalPower || store.powerLevel);
+  return <div className={styles.maxTotalPower}>/ {floorTotalPower}</div>;
+}
+
+/** An equipped Title, earned from completing a Seal */
+function Title({ titleInfo }: { titleInfo: DimTitle }) {
+  const { title, gildedNum, isGildedForCurrentSeason } = titleInfo;
+  return (
+    <span
+      className={clsx(styles.title, { [styles.gildedCurrentSeason]: isGildedForCurrentSeason })}
+    >
+      <span>{title}</span>
+      {gildedNum > 0 && (
+        <>
+          <span className={styles.gildedIcon}>{gildedIcon}</span>
+          {gildedNum > 1 && <span className={styles.gildedNum}>{gildedNum}</span>}
+        </>
+      )}
+    </span>
   );
 }

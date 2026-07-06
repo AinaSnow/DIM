@@ -1,9 +1,6 @@
-import {
-  DestinyCharacterProgressionComponent,
-  DestinyProgressionDefinition,
-  DestinySeasonDefinition,
-  DestinySeasonPassDefinition,
-} from 'bungie-api-ts/destiny2';
+import { getSeasonPassStatus } from 'app/progress/SeasonalRank';
+import { useCurrentSeasonInfo } from 'app/utils/seasons';
+import { DestinyProfileResponse } from 'bungie-api-ts/destiny2';
 import { D2ManifestDefinitions } from '../../destiny2/d2-definitions';
 
 /**
@@ -11,23 +8,27 @@ import { D2ManifestDefinitions } from '../../destiny2/d2-definitions';
  * for the first 5 season levels each week. Ideally this would just come back in the response,
  * but instead we have to calculate it from the weekly XP numbers.
  */
-export function isWellRested(
+export function useIsWellRested(
   defs: D2ManifestDefinitions,
-  season: DestinySeasonDefinition | undefined,
-  seasonPass: DestinySeasonPassDefinition | undefined,
-  characterProgression: DestinyCharacterProgressionComponent
+  profileInfo: DestinyProfileResponse,
 ): {
+  /** Is the "well rested" buff active? */
   wellRested: boolean;
-  progress?: number;
+  /** How much of the well rested XP has been earned so far this week? */
+  weeklyProgress?: number;
+  /**
+   * How much XP total needs to be earned in a week before the character is no
+   * longer "well rested"?
+   */
   requiredXP?: number;
 } {
-  if (!season || !season.seasonPassProgressionHash) {
+  const { season, seasonPass } = useCurrentSeasonInfo(defs, profileInfo);
+  if (!season) {
     return {
       wellRested: false,
     };
   }
 
-  const WELL_RESTED_LEVELS = 5;
   const seasonPassProgressionHash = seasonPass?.rewardProgressionHash;
   const prestigeProgressionHash = seasonPass?.prestigeProgressionHash;
 
@@ -37,51 +38,18 @@ export function isWellRested(
     };
   }
 
-  const seasonProgress = characterProgression.progressions[seasonPassProgressionHash];
-  const prestigeProgress = characterProgression.progressions[prestigeProgressionHash];
+  const { weeklyProgress } = getSeasonPassStatus(defs, profileInfo, seasonPass, season);
 
-  const prestigeMode = seasonProgress.level === seasonProgress.levelCap;
+  // 5 levels worth of XP at 100k each. We used to calculate this dynamically
+  // but this has been 500k consistently and the calculation is no longer easy
+  // as the definitions don't agree with the game (Ranks 101-110 are displayed
+  // in game as 5 segments, each of which is equivalent to one regular levels at
+  // 100k, but in the defs they are a single 500k level).
+  const requiredXP = 500_000;
 
-  const seasonProgressDef = defs.Progression.get(seasonPassProgressionHash);
-  const prestigeProgressDef = defs.Progression.get(prestigeProgressionHash);
-
-  if (seasonProgressDef.steps.length === seasonProgress.levelCap) {
-    for (let i = 0; i < WELL_RESTED_LEVELS; i++) {
-      seasonProgressDef.steps.push(prestigeProgressDef.steps[0]);
-    }
-  }
-
-  const totalLevel = prestigeMode
-    ? seasonProgress.level + prestigeProgress.level
-    : seasonProgress.level;
-
-  const progress = prestigeMode ? prestigeProgress.weeklyProgress : seasonProgress.weeklyProgress;
-
-  const requiredXP =
-    prestigeMode && prestigeProgress.level >= WELL_RESTED_LEVELS
-      ? xpRequiredForLevel(0, prestigeProgressDef) * WELL_RESTED_LEVELS
-      : xpTotalRequiredForLevel(totalLevel, seasonProgressDef, WELL_RESTED_LEVELS);
-
-  // Have you gained XP equal to three full levels worth of XP?
   return {
-    wellRested: progress < requiredXP,
-    progress,
+    wellRested: weeklyProgress < requiredXP,
+    weeklyProgress,
     requiredXP,
   };
-}
-
-/**
- * How much XP was required to achieve the given level?
- */
-function xpRequiredForLevel(level: number, progressDef: DestinyProgressionDefinition) {
-  const stepIndex = Math.min(Math.max(1, level), progressDef.steps.length - 1);
-  return progressDef.steps[stepIndex].progressTotal;
-}
-
-function xpTotalRequiredForLevel(totalLevel, seasonProgressDef, WELL_RESTED_LEVELS) {
-  let totalXP = 0;
-  for (let i = 0; i < WELL_RESTED_LEVELS; i++) {
-    totalXP += xpRequiredForLevel(totalLevel - i, seasonProgressDef);
-  }
-  return totalXP;
 }

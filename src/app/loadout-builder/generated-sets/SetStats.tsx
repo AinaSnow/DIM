@@ -1,101 +1,199 @@
-import React from 'react';
-import _ from 'lodash';
-import PressTip from 'app/dim-ui/PressTip';
-import { AppIcon, faExclamationTriangle, powerIndicatorIcon } from 'app/shell/icons';
+import { AlertIcon } from 'app/dim-ui/AlertIcon';
 import BungieImage from 'app/dim-ui/BungieImage';
-import { DestinyStatDefinition } from 'bungie-api-ts/destiny2';
-import { ArmorSet, statHashes, StatTypes } from '../types';
-import { calculateTotalTier, sumEnabledStats } from './utils';
+import { PressTip } from 'app/dim-ui/PressTip';
 import { t } from 'app/i18next-t';
-import { statTier } from '../utils';
-import { getPossiblyIncorrectStats } from 'app/utils/item-utils';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import styles from './SetStats.m.scss';
+import { ActiveSetBonusInfo, SetBonusesStatus } from 'app/item-popup/SetBonus';
+import { MAX_STAT } from 'app/loadout/known-values';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { AppIcon, powerIndicatorIcon } from 'app/shell/icons';
+import StatTooltip from 'app/store-stats/StatTooltip';
+import { sumBy } from 'app/utils/collections';
+import { DestinyStatDefinition } from 'bungie-api-ts/destiny2';
+import clsx from 'clsx';
+import { sum } from 'es-toolkit';
+import {
+  ArmorStatHashes,
+  ArmorStats,
+  DesiredStatRange,
+  ModStatChanges,
+  ResolvedStatConstraint,
+} from '../types';
+import * as styles from './SetStats.m.scss';
+import { sumEnabledStats } from './utils';
 
-interface Props {
-  defs: D2ManifestDefinitions;
-  set: ArmorSet;
-  statOrder: StatTypes[];
-  enabledStats: Set<StatTypes>;
-}
+/**
+ * Displays the overall stats and per-stat stat of a generated loadout set.
+ */
+// TODO: would be a lot easier if this was just passed a Loadout or FullyResolvedLoadout...
+export function TierlessSetStats({
+  stats,
+  getStatsBreakdown,
+  maxPower,
+  desiredStatRanges,
+  boostedStats,
+  className,
+  existingLoadoutName,
+  equippedHashes,
+  setBonusStatus,
+  setBonusModWarning,
+}: {
+  stats: ArmorStats;
+  getStatsBreakdown: () => ModStatChanges;
+  maxPower: number;
+  desiredStatRanges: DesiredStatRange[];
+  boostedStats: Set<ArmorStatHashes>;
+  className?: string;
+  existingLoadoutName?: string;
+  equippedHashes: Set<number>;
+  setBonusStatus: ActiveSetBonusInfo;
+  setBonusModWarning?: boolean;
+}) {
+  const defs = useD2Definitions()!;
+  const totalStats = sum(Object.values(stats));
+  const countedStatsTotal = sumEnabledStats(stats, desiredStatRanges); // Total of the stats that were within the desired ranges
 
-function SetStats({ defs, set, statOrder, enabledStats }: Props) {
-  const stats = _.mapValues(statHashes, (statHash) => defs.Stat.get(statHash));
-  const totalTier = calculateTotalTier(set.stats);
-  const enabledTier = sumEnabledStats(set.stats, enabledStats);
-  // class items is the only array larger than 1 and it cannot have incorrect stats
-  const incorrectStats = _.uniq(set.armor.flatMap((items) => getPossiblyIncorrectStats(items[0])));
-
-  const displayStats = { ...set.stats };
+  // TODO: Lots of changes needed here once we drop tiers. Maybe we just show a
+  // total stat sum? Doesn't seem that useful...
+  // TODO: Highlight enhanced stats?
 
   return (
-    <div>
-      <span>
-        {set.armor.some((items) => items[0].stats?.some((stat) => stat.baseMayBeWrong)) && (
+    <div className={clsx(styles.container, className)}>
+      <div className={styles.tierLightContainer}>
+        <TotalStats enabledStats={countedStatsTotal} totalStats={totalStats} />
+      </div>
+      {desiredStatRanges.map((c) => {
+        const statHash: ArmorStatHashes = c.statHash;
+        const statDef = defs.Stat.get(statHash);
+        const value = stats[statHash];
+        return (
           <PressTip
-            elementType="span"
-            tooltip={t('LoadoutBuilder.StatIncorrectWarning', {
-              stats: incorrectStats.join('/'),
-            })}
+            key={statHash}
+            tooltip={() => (
+              <StatTooltip
+                stat={{
+                  hash: statHash,
+                  displayProperties: statDef.displayProperties,
+                  value,
+                  breakdown: getStatsBreakdown()[statHash].breakdown,
+                }}
+                equippedHashes={equippedHashes}
+              />
+            )}
           >
-            <AppIcon className={styles.warning} icon={faExclamationTriangle} />
+            <TierlessStat
+              isActive={c.maxStat > 0}
+              isBoosted={boostedStats.has(statHash)}
+              stat={statDef}
+              value={value}
+              effectiveValue={Math.min(value, c.maxStat)}
+            />
           </PressTip>
-        )}
-        <span className={styles.statSegment}>
-          <span>
-            <b>
-              {t('LoadoutBuilder.TierNumber', {
-                tier: enabledTier,
-              })}
-            </b>
-          </span>
-          {enabledTier !== totalTier && (
-            <span className={styles.nonActiveStat}>
-              <b>
-                {` (${t('LoadoutBuilder.TierNumber', {
-                  tier: totalTier,
-                })})`}
-              </b>
-            </span>
-          )}
-        </span>
-        {statOrder.map((stat) => (
-          <Stat
-            key={stat}
-            isActive={enabledStats.has(stat)}
-            stat={stats[stat]}
-            value={displayStats[stat]}
-          />
-        ))}
-      </span>
+        );
+      })}
       <span className={styles.light}>
-        <AppIcon icon={powerIndicatorIcon} /> {set.maxPower}
+        <AppIcon icon={powerIndicatorIcon} />
+        {maxPower}
       </span>
+      <SetBonusesStatus setBonusStatus={setBonusStatus} />
+      {setBonusModWarning && (
+        <PressTip tooltip={t('LoadoutBuilder.SetBonusModWarning')}>
+          <AlertIcon className={styles.statBarWarningIcon} />
+        </PressTip>
+      )}
+      {existingLoadoutName ? (
+        <span className={styles.existingLoadout}>
+          {t('LoadoutBuilder.ExistingLoadout')}:{' '}
+          <span className={styles.loadoutName}>{existingLoadoutName}</span>
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function Stat({
+function TierlessStat({
   stat,
   isActive,
+  isBoosted,
   value,
+  effectiveValue,
 }: {
   stat: DestinyStatDefinition;
   isActive: boolean;
+  isBoosted: boolean;
   value: number;
+  effectiveValue: number;
 }) {
+  let shownValue: number;
+  let ignoredExcess: number | undefined;
+  if (effectiveValue !== value) {
+    if (effectiveValue === 0 || effectiveValue >= MAX_STAT) {
+      shownValue = value;
+    } else {
+      shownValue = effectiveValue;
+      ignoredExcess = value - effectiveValue;
+    }
+  } else {
+    shownValue = value;
+  }
+  const showIgnoredExcess = ignoredExcess !== undefined;
   return (
     <span
-      className={isActive ? styles.statSegment : `${styles.statSegment} ${styles.nonActiveStat}`}
+      className={clsx(styles.statSegment, {
+        [styles.nonActiveStat]: !showIgnoredExcess && !isActive,
+      })}
     >
-      <b>
-        {t('LoadoutBuilder.TierNumber', {
-          tier: statTier(value),
+      <BungieImage className={styles.statIcon} src={stat.displayProperties.icon} />
+      <span
+        className={clsx(styles.tier, {
+          [styles.boostedValue]: isBoosted,
         })}
-      </b>{' '}
-      <BungieImage src={stat.displayProperties.icon} /> {stat.displayProperties.name}
+      >
+        {shownValue}
+        {showIgnoredExcess && <span className={styles.nonActiveStat}>+{ignoredExcess}</span>}
+      </span>
     </span>
   );
 }
 
-export default SetStats;
+function TotalStats({ totalStats, enabledStats }: { totalStats: number; enabledStats: number }) {
+  return (
+    <>
+      <span className={styles.tier}>{t('LoadoutBuilder.StatTotal', { total: enabledStats })}</span>
+      {enabledStats !== totalStats && (
+        <span className={clsx(styles.tier, styles.nonActiveStat)}>({totalStats})</span>
+      )}
+    </>
+  );
+}
+
+export function ReferenceConstraints({
+  resolvedStatConstraints,
+}: {
+  resolvedStatConstraints: ResolvedStatConstraint[];
+}) {
+  const defs = useD2Definitions()!;
+  const totalStats = sumBy(resolvedStatConstraints, (c) => c.minStat);
+  const enabledStats = sumBy(resolvedStatConstraints, (c) => (c.ignored ? 0 : c.minStat));
+
+  return (
+    <div className={styles.container}>
+      <TotalStats enabledStats={enabledStats} totalStats={totalStats} />
+      {resolvedStatConstraints.map((c) => {
+        const statHash: ArmorStatHashes = c.statHash;
+        const statDef = defs.Stat.get(statHash);
+        const value = c.minStat;
+        return (
+          <span
+            key={statHash}
+            className={clsx(styles.statSegment, {
+              [styles.nonActiveStat]: c.ignored,
+            })}
+          >
+            <BungieImage className={styles.statIcon} src={statDef.displayProperties.icon} />
+            <span className={styles.tier}>{value}</span>
+          </span>
+        );
+      })}
+    </div>
+  );
+}

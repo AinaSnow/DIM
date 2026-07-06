@@ -1,80 +1,109 @@
-import React from 'react';
-import { StatInfo } from './Compare';
-import { DimItem, D1Stat } from '../inventory/item-types';
-import { getColor } from '../shell/filters';
-import { AppIcon, starIcon } from '../shell/icons';
+import AnimatedNumber from 'app/dim-ui/AnimatedNumber';
+import RecoilStat, { recoilValue } from 'app/item-popup/RecoilStat';
+import { getCompareColor, percent } from 'app/shell/formatters';
+import { AppIcon, tunedStatIcon } from 'app/shell/icons';
+import { artificeIcon } from 'app/shell/icons/custom/Artifice';
+import { getArmor3TuningStat, isArtifice } from 'app/utils/item-utils';
 import clsx from 'clsx';
-import { t } from 'app/i18next-t';
-import RecoilStat from 'app/item-popup/RecoilStat';
-import ElementIcon from 'app/inventory/ElementIcon';
-import { PowerCapDisclaimer } from 'app/dim-ui/PowerCapDisclaimer';
 import { StatHashes } from 'data/d2/generated-enums';
+import { D1Stat, DimItem, DimStat } from '../inventory/item-types';
+import * as styles from './CompareStat.m.scss';
 
 export default function CompareStat({
+  min,
+  max,
   stat,
   item,
-  highlight,
-  setHighlight,
+  value,
+  relevantStatHashes,
+  extraStatInfo = false,
 }: {
-  stat: StatInfo;
+  stat?: DimStat | D1Stat;
   item: DimItem;
-  highlight?: number | string | undefined;
-  setHighlight?(value?: string | number): void;
+  value: number;
+  min: number;
+  max: number;
+  /** If this represents a custom stat, these are the real stats that custom stat includes. */
+  relevantStatHashes?: number[];
+  /** Whether to show extra stat info icons (e.g. that the total includes tuners, or that the stat is tuned) and stat bars. */
+  extraStatInfo?: boolean;
 }) {
-  const itemStat = stat.getStat(item);
+  const isMasterworkStat = Boolean(
+    item?.bucket.inWeapons &&
+    stat &&
+    item.masterworkInfo?.stats?.some((s) => s.isPrimary && s.hash === stat.statHash),
+  );
+  const color = getCompareColor(statRange(stat, min, max, value));
+  const tunedStatHash = getArmor3TuningStat(item);
+  // If this tuner benefits the custom stat, or this is a single real stat that's tunable
+  const showTunerIcon =
+    relevantStatHashes?.includes(tunedStatHash!) ||
+    Boolean(tunedStatHash && tunedStatHash === stat?.statHash);
+  const syntheticStat = Boolean(stat?.statHash && stat.statHash < 0);
+  // If this is Artifice armor and a custom or Total stat
+  const showArtificeIcon = isArtifice(item) && syntheticStat;
+  const extraIcon = showTunerIcon ? tunedStatIcon : showArtificeIcon ? artificeIcon : undefined;
+  const showBar = stat?.bar && item.bucket.inArmor;
 
   return (
-    <div
-      className={clsx({ highlight: stat.id === highlight })}
-      onMouseOver={() => setHighlight?.(stat.id)}
-      style={getColor(statRange(itemStat, stat), 'color')}
-    >
-      <span>
-        {stat.id === 'Rating' && <AppIcon icon={starIcon} />}
-        {item.isDestiny2() && stat.id === 'EnergyCapacity' && itemStat && item.energy && (
-          <ElementIcon element={item.element} />
-        )}
-        {itemStat?.value !== undefined ? (
-          itemStat.statHash === StatHashes.RecoilDirection ? (
-            <span className="stat-recoil">
-              <span>{itemStat.value}</span>
-              <RecoilStat value={itemStat.value} />
+    <div className={styles.stat} style={{ color }}>
+      <AnimatedNumber
+        value={value}
+        className={clsx(styles.statValue, {
+          [styles.masterwork]: isMasterworkStat,
+          [styles.noMinWidth]: !stat || stat.statHash === StatHashes.AnyEnergyTypeCost,
+        })}
+      />
+      {item.bucket.inArmor && extraStatInfo && (
+        <span className={clsx(styles.statBarArea, showBar && styles.statBarContainer)}>
+          {extraIcon && (
+            <span
+              className={clsx(styles.statExceptionIndicator, {
+                [styles.customStat]: syntheticStat,
+                [styles.smaller]: showArtificeIcon,
+              })}
+            >
+              <AppIcon icon={extraIcon} />
+              {showArtificeIcon && <sup>+</sup>}
             </span>
-          ) : (
-            itemStat.value
-          )
-        ) : (
-          t('Stats.NotApplicable')
-        )}
-        {Boolean(itemStat?.value) &&
-          (itemStat as D1Stat).qualityPercentage &&
-          Boolean((itemStat as D1Stat).qualityPercentage!.range) && (
-            <span className="range">({(itemStat as D1Stat).qualityPercentage!.range})</span>
           )}
-        {stat.id === 'PowerCap' && <PowerCapDisclaimer item={item} />}
-      </span>
+          {showBar && (
+            <span
+              className={styles.statBarFill}
+              style={{ width: percent(Math.max(0, value) / stat.maximumValue) }}
+            />
+          )}
+        </span>
+      )}
+      {stat?.statHash === StatHashes.RecoilDirection && <RecoilStat value={value} />}
+      {Boolean(value) &&
+        stat &&
+        'qualityPercentage' in stat &&
+        stat.qualityPercentage &&
+        Boolean(stat.qualityPercentage.range) && (
+          <span className={styles.range}>({stat.qualityPercentage.range})</span>
+        )}
     </div>
   );
 }
 
 // Turns a stat and a list of ranges into a 0-100 scale
-function statRange(
-  stat: { value?: number; statHash: number; qualityPercentage?: { min: number } } | undefined,
-  statInfo: StatInfo
-) {
-  if (!stat) {
-    return -1;
-  }
-  if (stat.qualityPercentage) {
+function statRange(stat: DimStat | D1Stat | undefined, min: number, max: number, value: number) {
+  if (stat && 'qualityPercentage' in stat && stat.qualityPercentage) {
     return stat.qualityPercentage.min;
   }
 
-  if (!statInfo || !statInfo.enabled) {
+  if (min === max) {
     return -1;
   }
 
-  if (statInfo.lowerBetter) {
-    return (100 * (statInfo.max - (stat.value || statInfo.max))) / (statInfo.max - statInfo.min);
+  if (stat?.statHash === StatHashes.RecoilDirection) {
+    value = recoilValue(value);
   }
-  return (100 * ((stat.value || 0) - statInfo.min)) / (statInfo.max - statInfo.min);
+
+  if (stat?.smallerIsBetter) {
+    return (100 * (max - value)) / (max - min);
+  }
+
+  return (100 * (value - min)) / (max - min);
 }

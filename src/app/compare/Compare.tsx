@@ -1,663 +1,406 @@
-import React from 'react';
+import { CustomStatDef } from '@destinyitemmanager/dim-api-types';
+import { languageSelector } from 'app/dim-api/selectors';
+import Select, { Option } from 'app/dim-ui/Select';
+import { useTableColumnSorts } from 'app/dim-ui/table-columns';
 import { t } from 'app/i18next-t';
-import clsx from 'clsx';
-import { DimItem, DimStat } from '../inventory/item-types';
-import _ from 'lodash';
-import { CompareService } from './compare.service';
-import { chainComparator, reverseComparator, compareBy } from '../utils/comparators';
-import { createSelector } from 'reselect';
-import CompareItem from './CompareItem';
-import './compare.scss';
-import { Subscriptions } from '../utils/rx-utils';
-import { connect } from 'react-redux';
-import { ReviewsState, getRating, ratingsSelector, shouldShowRating } from '../item-review/reducer';
-import { RootState } from 'app/store/types';
-import Sheet from '../dim-ui/Sheet';
-import { showNotification } from '../notifications/notifications';
-import { DestinyDisplayPropertiesDefinition } from 'bungie-api-ts/destiny2';
-import { makeDupeID } from 'app/search/search-filter';
-import { D2ManifestDefinitions } from '../destiny2/d2-definitions';
+import { locateItem } from 'app/inventory/locate-item';
+import { createItemContextSelector } from 'app/inventory/selectors';
+import { ItemCreationContext } from 'app/inventory/store/d2-item-factory';
 import {
-  getItemSpecialtyModSlotDisplayName,
-  getSpecialtySocketMetadata,
-} from 'app/utils/item-utils';
-import ElementIcon from 'app/inventory/ElementIcon';
-import { DimStore } from 'app/inventory/store-types';
-import { storesSelector } from 'app/inventory/selectors';
-import { getAllItems } from 'app/inventory/stores-helpers';
-import { RouteComponentProps, withRouter } from 'react-router';
-import { itemPop } from 'app/dim-ui/scroll';
-import { getWeaponArchetype } from 'app/dim-ui/WeaponArchetype';
-import { ItemCategoryHashes, StatHashes } from 'data/d2/generated-enums';
-import { powerCapPlugSetHash } from 'app/search/d2-known-values';
+  applySocketOverrides,
+  useSocketOverridesForItems,
+} from 'app/inventory/store/override-sockets';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { showNotification } from 'app/notifications/notifications';
+import { buildStatInfo } from 'app/organizer/Columns';
+import { buildRows, sortRows } from 'app/organizer/ItemTable';
+import { ColumnDefinition, Row, TableContext } from 'app/organizer/table-types';
+import { weaponMasterworkY2SocketTypeHash } from 'app/search/d2-known-values';
+import Checkbox from 'app/settings/Checkbox';
+import { useSetting } from 'app/settings/hooks';
+import { Settings } from 'app/settings/initial-settings';
+import { AppIcon, faList, settingsIcon, statBarsIcon } from 'app/shell/icons';
+import { masterworkHammer } from 'app/shell/icons/custom/MasterworkHammer';
+import { acquisitionRecencyComparator } from 'app/shell/item-comparators';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { compact } from 'app/utils/collections';
+import { emptyArray } from 'app/utils/empty';
+import ModificationsIcon from 'destiny-icons/general/modifications.svg?react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { Link } from 'react-router';
+import Sheet from '../dim-ui/Sheet';
+import { DimItem, DimSocket } from '../inventory/item-types';
+import { chainComparator, compareBy } from '../utils/comparators';
+import * as styles from './Compare.m.scss';
+import { getColumns } from './CompareColumns';
+import CompareItem, { CompareHeaders } from './CompareItem';
+import CompareSuggestions from './CompareSuggestions';
+import { endCompareSession, removeCompareItem, updateCompareQuery } from './actions';
+import { CompareSession } from './reducer';
+import { compareItemsSelector, compareOrganizerLinkSelector } from './selectors';
 
-interface StoreProps {
-  ratings: ReviewsState['ratings'];
-  stores: DimStore[];
-  defs?: D2ManifestDefinitions;
-}
+// TODO: CSS grid-with-sticky layout
+// TODO: dropdowns for query buttons
+// TODO: freeform query
+// TODO: Allow minimizing the sheet (to make selection easier)
+export default function Compare({ session }: { session: CompareSession }) {
+  const dispatch = useThunkDispatch();
+  const defs = useD2Definitions()!;
+  const [compareBaseStats, setCompareBaseStats] = useSetting('compareBaseStats');
+  const [armorCompareSetting, setArmorCompareSetting] = useSetting('armorCompare');
+  const [assumeWeaponMasterwork, setAssumeWeaponMasterwork] = useSetting('compareWeaponMasterwork');
+  const itemCreationContext = useSelector(createItemContextSelector);
+  const rawCompareItems = useSelector(compareItemsSelector(session.vendorCharacterId));
+  const organizerLink = useSelector(compareOrganizerLinkSelector);
 
-type Props = StoreProps & RouteComponentProps;
+  /** The stat row to highlight */
+  const [highlight, setHighlight] = useState<string | number>();
+  const [socketOverrides, onPlugClicked] = useSocketOverridesForItems();
+  const [columnSorts, toggleColumnSort] = useTableColumnSorts([]);
 
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    ratings: ratingsSelector(state),
-    stores: storesSelector(state),
-    defs: state.manifest.d2Manifest,
-  };
-}
+  const comparingArmor = rawCompareItems[0]?.bucket.inArmor;
+  const comparingWeapons = rawCompareItems[0]?.bucket.inWeapons;
+  const armorCompareMode =
+    $DIM_FLAVOR === 'release'
+      ? compareBaseStats && comparingArmor
+        ? 'base'
+        : 'current'
+      : armorCompareSetting;
+  const doAssumeWeaponMasterworks = Boolean(defs && assumeWeaponMasterwork && comparingWeapons);
 
-// TODO: There's far too much state here.
-// TODO: maybe have a holder/state component and a connected display component
-interface State {
-  show: boolean;
-  comparisonItems: DimItem[];
-  highlight?: string | number;
-  sortedHash?: string | number;
-  sortBetterFirst: boolean;
-  comparisonSets: { buttonLabel: React.ReactNode; items: DimItem[] }[];
-}
-
-export interface StatInfo {
-  id: string | number;
-  displayProperties: DestinyDisplayPropertiesDefinition;
-  min: number;
-  max: number;
-  enabled: boolean;
-  lowerBetter: boolean;
-  getStat: StatGetter;
-}
-type StatGetter = (item: DimItem) => DimStat | { value?: number; statHash: number } | undefined;
-
-class Compare extends React.Component<Props, State> {
-  state: State = {
-    comparisonItems: [],
-    comparisonSets: [],
-    show: false,
-    sortBetterFirst: true,
-  };
-  private subscriptions = new Subscriptions();
-
-  // Memoize computing the list of stats
-  private getAllStatsSelector = createSelector(
-    (state: State) => state.comparisonItems,
-    (_state: State, props: Props) => props.ratings,
-    getAllStats
-  );
-
-  componentDidMount() {
-    this.subscriptions.add(
-      CompareService.compareItems$.subscribe((args) => {
-        this.setState({ show: true });
-        CompareService.dialogOpen = true;
-
-        this.add(args);
-      })
-    );
-  }
-
-  componentDidUpdate(prevProps: Props) {
-    if (prevProps.location.pathname !== this.props.location.pathname) {
-      this.cancel();
+  // Produce new items which have had their sockets changed
+  const compareItems = useMemo(() => {
+    let items = rawCompareItems;
+    if (doAssumeWeaponMasterworks && comparingWeapons) {
+      // Fully masterwork weapons
+      items = items.map((i) => masterworkWeapon(i, itemCreationContext));
     }
-  }
+    // Apply any socket override selections (perk choices)
+    return items.map((i) => applySocketOverrides(itemCreationContext, i, socketOverrides[i.id]));
+  }, [
+    itemCreationContext,
+    doAssumeWeaponMasterworks,
+    rawCompareItems,
+    socketOverrides,
+    comparingWeapons,
+  ]);
 
-  componentWillUnmount() {
-    this.subscriptions.unsubscribe();
-    CompareService.dialogOpen = false;
-  }
+  const cancel = useCallback(() => {
+    dispatch(endCompareSession());
+  }, [dispatch]);
 
-  render() {
-    const { ratings } = this.props;
-    const {
-      show,
-      comparisonItems: unsortedComparisonItems,
-      sortedHash,
-      highlight,
-      comparisonSets,
-    } = this.state;
-
-    if (!show || unsortedComparisonItems.length === 0) {
-      CompareService.dialogOpen = false;
-      return null;
-    }
-
-    const comparisonItems = !sortedHash
-      ? unsortedComparisonItems
-      : Array.from(unsortedComparisonItems).sort(
-          reverseComparator(
-            chainComparator(
-              compareBy((item: DimItem) => {
-                const dtrRating = $featureFlags.reviewsEnabled && getRating(item, ratings);
-                const showRating =
-                  $featureFlags.reviewsEnabled &&
-                  dtrRating &&
-                  shouldShowRating(dtrRating) &&
-                  dtrRating.overallScore;
-
-                const stat =
-                  item.primStat && sortedHash === item.primStat.statHash
-                    ? item.primStat
-                    : sortedHash === 'Rating'
-                    ? { value: showRating || 0 }
-                    : sortedHash === 'EnergyCapacity'
-                    ? {
-                        value: (item.isDestiny2() && item.energy?.energyCapacity) || 0,
-                      }
-                    : sortedHash === 'PowerCap'
-                    ? {
-                        value: (item.isDestiny2() && item.powerCap) || 99999999,
-                      }
-                    : (item.stats || []).find((s) => s.statHash === sortedHash);
-
-                if (!stat) {
-                  return -1;
-                }
-
-                const shouldReverse =
-                  isDimStat(stat) && stat.smallerIsBetter
-                    ? this.state.sortBetterFirst
-                    : !this.state.sortBetterFirst;
-                return shouldReverse ? -stat.value : stat.value;
-              }),
-              compareBy((i) => i.index),
-              compareBy((i) => i.name)
-            )
-          )
-        );
-
-    const stats = this.getAllStatsSelector(this.state, this.props);
-
-    return (
-      <Sheet
-        onClose={this.cancel}
-        header={
-          <div className="compare-options">
-            {comparisonSets.map(({ buttonLabel, items }, index) => (
-              <button
-                type="button"
-                key={index}
-                className="dim-button"
-                onClick={(e) => this.compareSimilar(e, items)}
-              >
-                {buttonLabel} {`(${items.length})`}
-              </button>
-            ))}
-          </div>
-        }
-      >
-        <div id="loadout-drawer" className="compare">
-          <div className="compare-bucket" onMouseLeave={() => this.setHighlight(undefined)}>
-            <div className="compare-item fixed-left">
-              <div className="spacer" />
-              {stats.map((stat) => (
-                <div
-                  key={stat.id}
-                  className={clsx('compare-stat-label', {
-                    highlight: stat.id === highlight,
-                    sorted: stat.id === sortedHash,
-                  })}
-                  onMouseOver={() => this.setHighlight(stat.id)}
-                  onClick={() => this.sort(stat.id)}
-                >
-                  {stat.displayProperties.name}
-                </div>
-              ))}
-            </div>
-            <div className="compare-items" onTouchStart={this.stopTouches}>
-              {comparisonItems.map((item) => (
-                <CompareItem
-                  item={item}
-                  key={item.id}
-                  stats={stats}
-                  itemClick={itemPop}
-                  remove={this.remove}
-                  setHighlight={this.setHighlight}
-                  highlight={highlight}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      </Sheet>
-    );
-  }
-
-  // prevent touches from bubbling which blocks scrolling
-  private stopTouches = (e: React.TouchEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    return false;
-  };
-
-  private setHighlight = (highlight?: string | number) => {
-    this.setState({ highlight });
-  };
-
-  private cancel = () => {
-    this.setState({
-      show: false,
-      comparisonItems: [],
-      highlight: undefined,
-      sortedHash: undefined,
-    });
-    CompareService.dialogOpen = false;
-  };
-
-  private compareSimilar = (e: React.MouseEvent, comparisonSetItems: DimItem[]) => {
-    e.preventDefault();
-    this.setState({
-      comparisonItems: comparisonSetItems,
-    });
-  };
-
-  private sort = (sortedHash?: string | number) => {
-    this.setState((prevState) => ({
-      sortedHash,
-      sortBetterFirst: prevState.sortedHash === sortedHash ? !prevState.sortBetterFirst : true,
-    }));
-  };
-  private add = ({
-    additionalItems,
-    showSomeDupes,
-  }: {
-    additionalItems: DimItem[];
-    showSomeDupes: boolean;
-  }) => {
-    // use the first item and assume all others are of the same 'type'
-    const exampleItem = additionalItems[0];
-    if (!exampleItem.comparable) {
-      return;
-    }
-
-    const { comparisonItems } = this.state;
-    if (comparisonItems.length && exampleItem.typeName !== comparisonItems[0].typeName) {
+  // Reset if there ever are no items
+  const hasItems = compareItems.length > 0;
+  useEffect(() => {
+    if (!hasItems) {
       showNotification({
         type: 'warning',
-        title: exampleItem.name,
-        body:
-          comparisonItems[0].classType && exampleItem.classType !== comparisonItems[0].classType
-            ? t('Compare.Error.Class', { class: comparisonItems[0].classTypeNameLocalized })
-            : t('Compare.Error.Archetype', { type: comparisonItems[0].typeName }),
+        title: t('Compare.Error.Invalid'),
+        body: session.query,
       });
-      return;
+      cancel();
     }
+  }, [cancel, hasItems, session.query]);
 
-    // if there are existing comparisonItems, we're adding this one in
-    if (comparisonItems.length) {
-      // but not if it's already being compared
-      if (comparisonItems.some((i) => i.id === exampleItem.id)) {
-        return;
+  // Memoize computing the list of stats
+  const allStats = useMemo(() => buildStatInfo(compareItems), [compareItems]);
+
+  const updateQuery = useCallback(
+    (newQuery: string) => {
+      dispatch(updateCompareQuery(newQuery));
+    },
+    [dispatch],
+  );
+
+  const remove = useCallback(
+    (item: DimItem) => {
+      if (compareItems.length <= 1) {
+        cancel();
+      } else {
+        dispatch(removeCompareItem(item));
       }
+    },
+    [cancel, compareItems.length, dispatch],
+  );
 
-      this.setState({ comparisonItems: [...comparisonItems, ...additionalItems] });
-    }
+  // If the session was started with a specific item, this is it
+  const initialItem = session.initialItemId
+    ? compareItems.find((i) => i.id === session.initialItemId)
+    : undefined;
 
-    // else,this is a fresh comparison sheet spawn, so let's generate comparisonSets
-    else {
-      const allItems = getAllItems(this.props.stores);
-      // comparisonSets is an array so that it has order, filled with {label, setOfItems} objects
-      const comparisonSets = exampleItem.bucket.inArmor
-        ? this.findSimilarArmors(allItems, additionalItems)
-        : exampleItem.bucket.inWeapons
-        ? this.findSimilarWeapons(allItems, additionalItems)
-        : [];
+  /* ItemTable incursion */
 
-      // if this was spawned from an item, and not from a search,
-      // DIM tries to be helpful by including a starter comparison of dupes
-      if (additionalItems.length === 1 && showSomeDupes) {
-        const comparisonItems = comparisonSets[0]?.items ?? additionalItems;
-        this.setState({
-          comparisonSets,
-          comparisonItems,
-        });
-      }
-      // otherwise, compare only the items we were asked to compare
-      else {
-        this.setState({ comparisonSets, comparisonItems: [...additionalItems] });
-      }
-    }
-  };
+  const destinyVersion = compareItems[0]?.destinyVersion ?? 2;
+  const type = comparingArmor ? 'armor' : comparingWeapons ? 'weapon' : 'general';
+  const hasEnergy = compareItems.some((i) => i.energy);
+  const primaryStatDescription =
+    (!comparingArmor &&
+      !comparingWeapons &&
+      compareItems.find((i) => i.primaryStat)?.primaryStatDisplayProperties) ||
+    undefined;
 
-  private remove = (item: DimItem) => {
-    const { comparisonItems } = this.state;
+  const customStats = comparingArmor
+    ? itemCreationContext.customStats
+    : emptyArray<CustomStatDef>();
 
-    if (comparisonItems.length <= 1) {
-      this.cancel();
-    } else {
-      this.setState({ comparisonItems: comparisonItems.filter((c) => c.id !== item.id) });
-    }
-  };
+  const columns: ColumnDefinition[] = useMemo(
+    () =>
+      getColumns(
+        type,
+        hasEnergy,
+        allStats,
+        customStats,
+        destinyVersion,
+        armorCompareMode,
+        primaryStatDescription,
+        initialItem?.id,
+        onPlugClicked,
+      ),
+    [
+      type,
+      hasEnergy,
+      allStats,
+      armorCompareMode,
+      destinyVersion,
+      customStats,
+      primaryStatDescription,
+      initialItem?.id,
+      onPlugClicked,
+    ],
+  );
 
-  private findSimilarArmors = (
-    allArmors: DimItem[],
-    comparisonItems = this.state.comparisonItems
-  ) => {
-    const exampleItem = comparisonItems[0];
-    const exampleItemElementIcon = (
-      <ElementIcon key={exampleItem.id} element={exampleItem.element} />
-    );
-    const exampleItemModSlot = getSpecialtySocketMetadata(exampleItem);
-    const specialtyModSlotName =
-      (this.props.defs && getItemSpecialtyModSlotDisplayName(exampleItem, this.props.defs)) ?? '';
+  const classIfAny = comparingArmor ? compareItems[0]?.classType : undefined;
+  const filteredColumns = useMemo(
+    () =>
+      // TODO: filter to enabled columns once you can select columns
+      compact(
+        columns.filter(
+          (column) => column.limitToClass === undefined || column.limitToClass === classIfAny,
+        ),
+      ),
+    [columns, classIfAny],
+  );
 
-    // helper functions for filtering items
-    const matchesExample = (key: keyof DimItem) => (item: DimItem) =>
-      item[key] === exampleItem[key];
-    const matchingModSlot = (item: DimItem) =>
-      exampleItemModSlot === getSpecialtySocketMetadata(item);
-    const hasEnergy = (item: DimItem) => Boolean(item.isDestiny2() && item.energy);
+  // process items into Rows
+  const [unsortedRows, tableCtx] = useMemo(
+    () => buildRows(compareItems, filteredColumns),
+    [filteredColumns, compareItems],
+  );
+  const language = useSelector(languageSelector);
+  const rows = useMemo(
+    () =>
+      sortRows(unsortedRows, columnSorts, filteredColumns, language, (a, b) =>
+        chainComparator(
+          compareBy((item) => item.id !== session.initialItemId),
+          acquisitionRecencyComparator,
+        )(a.item, b.item),
+      ),
+    [unsortedRows, columnSorts, filteredColumns, language, session.initialItemId],
+  );
 
-    // minimum filter: make sure it's all armor, and can go in the same slot on the same class
-    allArmors = allArmors
-      .filter((i) => i.bucket.inArmor)
-      .filter(matchesExample('typeName'))
-      .filter(matchesExample('classType'));
+  /* End ItemTable incursion */
 
-    let comparisonSets = [
-      // same slot on the same class
-      {
-        buttonLabel: exampleItem.typeName,
-        items: allArmors,
-      },
+  const firstCompareItem = rows[0]?.item;
+  // The example item is the one we'll use for generating suggestion buttons
+  const exampleItem = initialItem || firstCompareItem;
 
-      // above but also has to be armor 2.0
-      {
-        buttonLabel: [t('Compare.Armor2'), exampleItem.typeName].join(' + '),
-        items: hasEnergy(exampleItem) ? allArmors.filter(hasEnergy) : [],
-      },
+  const items = useMemo(
+    () => (
+      <CompareItems
+        rows={rows}
+        tableCtx={tableCtx}
+        filteredColumns={filteredColumns}
+        remove={remove}
+        setHighlight={setHighlight}
+        onPlugClicked={onPlugClicked}
+      />
+    ),
+    [rows, tableCtx, filteredColumns, remove, onPlugClicked],
+  );
 
-      // above but also the same seasonal mod slot, if it has one
-      {
-        buttonLabel: [specialtyModSlotName].join(' + '),
-        items:
-          hasEnergy(exampleItem) && exampleItemModSlot
-            ? allArmors.filter(hasEnergy).filter(matchingModSlot)
-            : [],
-      },
+  const selectOptions: Option<Settings['armorCompare']>[] = [
+    {
+      content: (
+        <>
+          <span className={styles.comparisonModeHint}>
+            <AppIcon icon={settingsIcon} />
+            <ModificationsIcon className={styles.modIcon} />
+          </span>
+          <div className={styles.comparisonModeInfo}>
+            <ModificationsIcon className={styles.modIcon} /> {t('Compare.CurrentStats')}
+            <span className={styles.comparisonModeDescription}>
+              {t('Compare.CurrentStatsDescription')}
+            </span>
+          </div>
+        </>
+      ),
+      key: 'current',
+      value: 'current',
+    },
+    {
+      content: (
+        <>
+          <span className={styles.comparisonModeHint}>
+            <AppIcon icon={settingsIcon} />
+            <AppIcon icon={statBarsIcon} />
+          </span>
+          <div className={styles.comparisonModeInfo}>
+            <AppIcon icon={statBarsIcon} /> {t('Organizer.Columns.BaseStats')}
+            <span className={styles.comparisonModeDescription}>
+              {t('Compare.BaseStatsDescription')}
+            </span>
+          </div>
+        </>
+      ),
+      key: 'base',
+      value: 'base',
+    },
+    {
+      content: (
+        <>
+          <span className={styles.comparisonModeHint}>
+            <AppIcon icon={settingsIcon} />
+            <AppIcon icon={masterworkHammer} />
+          </span>
+          <div className={styles.comparisonModeInfo}>
+            <AppIcon icon={masterworkHammer} /> {t('Compare.AssumeMasterworked')}
+            <span className={styles.comparisonModeDescription}>
+              {t('Compare.AssumeMasterworkedDescription')}
+            </span>
+          </div>
+        </>
+      ),
+      key: 'baseMasterwork',
+      value: 'baseMasterwork',
+    },
+  ];
 
-      // armor 2.0 and needs to match energy capacity element
-      {
-        buttonLabel: [exampleItemElementIcon, exampleItem.typeName],
-        items: hasEnergy(exampleItem)
-          ? allArmors.filter(hasEnergy).filter(matchesExample('element'))
-          : [],
-      },
-      // above but also the same seasonal mod slot, if it has one
-      {
-        buttonLabel: [exampleItemElementIcon, specialtyModSlotName],
-        items:
-          hasEnergy(exampleItem) && exampleItemModSlot
-            ? allArmors.filter(hasEnergy).filter(matchingModSlot).filter(matchesExample('element'))
-            : [],
-      },
+  const header = (
+    <div className={styles.options}>
+      {comparingArmor &&
+        ($DIM_FLAVOR !== 'release' ? (
+          <Select
+            options={selectOptions}
+            value={armorCompareSetting}
+            onChange={(v) => setArmorCompareSetting(v ?? 'baseMasterwork')}
+            className={styles.comparisonModebutton}
+            maxDropdownWidth={500}
+          />
+        ) : (
+          <Checkbox
+            label={t('Compare.CompareBaseStats')}
+            name="compareBaseStats"
+            value={compareBaseStats}
+            onChange={setCompareBaseStats}
+          />
+        ))}
+      {comparingWeapons && defs && destinyVersion === 2 && (
+        <Checkbox
+          label={t('Compare.AssumeMasterworked')}
+          name="compareWeaponMasterwork"
+          value={assumeWeaponMasterwork}
+          onChange={setAssumeWeaponMasterwork}
+        />
+      )}
+      {exampleItem && <CompareSuggestions exampleItem={exampleItem} onQueryChanged={updateQuery} />}
+      {organizerLink && (
+        <Link className={styles.organizerLink} to={organizerLink}>
+          <AppIcon icon={faList} />
+          <span>{t('Organizer.OpenIn')}</span>
+        </Link>
+      )}
+    </div>
+  );
 
-      // basically stuff with the same name & categories
-      {
-        buttonLabel: exampleItem.name,
-        items: allArmors.filter((i) => makeDupeID(i) === makeDupeID(exampleItem)),
-      },
-
-      // above, but also needs to match energy capacity element
-      {
-        buttonLabel: [exampleItemElementIcon, exampleItem.name],
-        items: hasEnergy(exampleItem)
-          ? allArmors
-              .filter(hasEnergy)
-              .filter(matchesExample('element'))
-              .filter((i) => makeDupeID(i) === makeDupeID(exampleItem))
-          : [],
-      },
-    ];
-
-    // here, we dump some buttons if they aren't worth displaying
-
-    comparisonSets = comparisonSets.reverse();
-    comparisonSets = comparisonSets.filter((comparisonSet, index) => {
-      const nextComparisonSet = comparisonSets[index + 1];
-      // always print the final button
-      if (!nextComparisonSet) {
-        return true;
-      }
-      // skip empty buttons
-      if (!comparisonSet.items.length) {
-        return false;
-      }
-      // skip if the next button has [all of, & only] the exact same items in it
-      if (
-        comparisonSet.items.length === nextComparisonSet.items.length &&
-        comparisonSet.items.every((setItem) =>
-          nextComparisonSet.items.some((nextSetItem) => nextSetItem === setItem)
-        )
-      ) {
-        return false;
-      }
-      return true;
-    });
-
-    return comparisonSets;
-  };
-
-  private findSimilarWeapons = (
-    allWeapons: DimItem[],
-    comparisonItems = this.state.comparisonItems
-  ) => {
-    const exampleItem = comparisonItems[0];
-    const exampleItemElementIcon = (
-      <ElementIcon key={exampleItem.id} element={exampleItem.element} />
-    );
-
-    const matchesExample = (key: keyof DimItem) => (item: DimItem) =>
-      item[key] === exampleItem[key];
-    // stuff for looking up weapon archetypes
-    const getRpm = (i: DimItem) => {
-      const itemRpmStat = i.stats?.find(
-        (s) =>
-          s.statHash ===
-          (exampleItem.isDestiny1() ? exampleItem.stats![0].statHash : StatHashes.RoundsPerMinute)
-      );
-      return itemRpmStat?.value || -99999999;
-    };
-
-    const exampleItemRpm = getRpm(exampleItem);
-    const intrinsic = exampleItem.isDestiny2() ? getWeaponArchetype(exampleItem) : undefined;
-    const intrinsicName = intrinsic?.displayProperties.name || t('Compare.Archetype');
-    const intrinsicHash = intrinsic?.hash;
-
-    // minimum filter: make sure it's all weapons and the same weapon type
-    allWeapons = allWeapons
-      .filter((i) => i.bucket.inWeapons)
-      .filter(matchesExample('typeName'))
-      .filter(
-        (i) =>
-          // specifically for destiny 2 grenade launchers, let's not compare special with heavy.
-          // all other weapon types with multiple ammos, are novelty exotic exceptions
-          !exampleItem.isDestiny2() ||
-          !i.isDestiny2() ||
-          !exampleItem.itemCategoryHashes.includes(ItemCategoryHashes.GrenadeLaunchers) ||
-          exampleItem.ammoType === i.ammoType
-      );
-
-    let comparisonSets = [
-      // same weapon type
-      {
-        buttonLabel: exampleItem.typeName,
-        items: allWeapons,
-      },
-
-      // above, but also same (kinetic/energy/heavy) slot
-      {
-        buttonLabel: [exampleItem.bucket.name, exampleItem.typeName].join(' + '),
-        items: allWeapons.filter((i) => i.bucket.name === exampleItem.bucket.name),
-      },
-
-      // same weapon type plus matching intrinsic (rpm+impact..... ish)
-      {
-        buttonLabel: [intrinsicName, exampleItem.typeName].join(' + '),
-        items: exampleItem.isDestiny2()
-          ? allWeapons.filter(
-              (i) => i.isDestiny2() && i.sockets && getWeaponArchetype(i)?.hash === intrinsicHash
-            )
-          : allWeapons.filter((i) => exampleItemRpm === getRpm(i)),
-      },
-
-      // same weapon type and also matching element (& usually same-slot because same element)
-      {
-        buttonLabel: [exampleItemElementIcon, exampleItem.typeName],
-        items: allWeapons.filter(matchesExample('element')),
-      },
-
-      // exact same weapon, judging by name. might span multiple expansions.
-      {
-        buttonLabel: exampleItem.name,
-        items: allWeapons.filter(matchesExample('name')),
-      },
-    ];
-    comparisonSets = comparisonSets.reverse();
-    comparisonSets = comparisonSets.filter((comparisonSet, index) => {
-      const nextComparisonSet = comparisonSets[index + 1];
-      // always print the final button
-      if (!nextComparisonSet) {
-        return true;
-      }
-      // skip empty buttons
-      if (!comparisonSet.items.length) {
-        return false;
-      }
-      // skip if the next button has [all of, & only] the exact same items in it
-      if (
-        comparisonSet.items.length === nextComparisonSet.items.length &&
-        comparisonSet.items.every((setItem) =>
-          nextComparisonSet.items.some((nextSetItem) => nextSetItem === setItem)
-        )
-      ) {
-        return false;
-      }
-      return true;
-    });
-
-    return comparisonSets;
-  };
+  const gridSpec = `min-content ${filteredColumns
+    .map((c) => c.gridWidth ?? 'min-content')
+    .join(' ')}`;
+  return (
+    <Sheet onClose={cancel} header={header} allowClickThrough>
+      <div className={styles.scroller}>
+        <div
+          className={styles.bucket}
+          style={{ gridTemplateRows: gridSpec }}
+          onPointerLeave={() => setHighlight(undefined)}
+        >
+          <CompareHeaders
+            columnSorts={columnSorts}
+            highlight={highlight}
+            setHighlight={setHighlight}
+            toggleColumnSort={toggleColumnSort}
+            filteredColumns={filteredColumns}
+          />
+          {items}
+        </div>
+      </div>
+    </Sheet>
+  );
 }
 
-function getAllStats(comparisonItems: DimItem[], ratings: ReviewsState['ratings']) {
-  const firstComparison = comparisonItems[0];
-  const stats: StatInfo[] = [];
+function CompareItems({
+  rows,
+  tableCtx,
+  filteredColumns,
+  remove,
+  setHighlight,
+  onPlugClicked,
+}: {
+  rows: Row[];
+  tableCtx: TableContext;
+  filteredColumns: ColumnDefinition[];
+  remove: (item: DimItem) => void;
+  setHighlight: React.Dispatch<React.SetStateAction<string | number | undefined>>;
+  onPlugClicked: (value: { item: DimItem; socket: DimSocket; plugHash: number }) => void;
+}) {
+  return rows.map((row) => (
+    <CompareItem
+      item={row.item}
+      row={row}
+      tableCtx={tableCtx}
+      filteredColumns={filteredColumns}
+      key={row.item.id}
+      itemClick={locateItem}
+      remove={remove}
+      setHighlight={setHighlight}
+      onPlugClicked={onPlugClicked}
+    />
+  ));
+}
 
-  if ($featureFlags.reviewsEnabled) {
-    stats.push(
-      makeFakeStat('Rating', t('Compare.Rating'), (item: DimItem) => {
-        const dtrRating = getRating(item, ratings);
-        const showRating = dtrRating && shouldShowRating(dtrRating) && dtrRating.overallScore;
-        return { statHash: 0, value: showRating || undefined };
-      })
-    );
+/**
+ * Produce a copy of the item with the masterwork socket filled in with the best
+ * masterwork option.
+ */
+function masterworkWeapon(i: DimItem, itemCreationContext: ItemCreationContext): DimItem {
+  if (i.destinyVersion !== 2 || !i.sockets) {
+    return i;
   }
-
-  if (firstComparison.primStat) {
-    stats.push(
-      makeFakeStat(
-        firstComparison.primStat.statHash,
-        firstComparison.primStat.stat.displayProperties,
-        (item: DimItem) => item.primStat || undefined
-      )
+  const masterworkSocket = i.sockets?.allSockets.find(
+    (socket) => socket.socketDefinition.socketTypeHash === weaponMasterworkY2SocketTypeHash,
+  );
+  const plugSet = masterworkSocket?.plugSet;
+  const plugged = masterworkSocket?.plugged;
+  if (plugSet && plugged) {
+    const fullMasterworkPlug = plugSet.plugs.find(
+      (p) =>
+        // Same stat (they each have their own plug category)
+        p.plugDef.plug.plugCategoryHash === plugged.plugDef.plug.plugCategoryHash &&
+        // And it's got a +10 stat value somewhere
+        p.plugDef.investmentStats.some((s) => s.value === 10) &&
+        // Edge of Fate (Tiered weapon) masterworks have zeroes in their
+        // conditional stats, while non-tiered masterworks have 3s. Both are in
+        // the plugset so this is the only way I know to find the right one.
+        p.plugDef.investmentStats.some(
+          (s) => s.isConditionallyActive && s.value === (i.tier > 0 ? 0 : 3),
+        ),
     );
-  }
-  if (
-    firstComparison.isDestiny2() &&
-    (firstComparison.bucket.inArmor || firstComparison.bucket.inWeapons)
-  ) {
-    stats.push(
-      makeFakeStat('PowerCap', t('Stats.PowerCap'), (item: DimItem) =>
-        item.isDestiny2()
-          ? {
-              statHash: powerCapPlugSetHash,
-              value: item.powerCap ?? undefined,
-            }
-          : undefined
-      )
-    );
-  }
-
-  if (firstComparison.isDestiny2() && firstComparison.bucket.inArmor) {
-    stats.push(
-      makeFakeStat(
-        'EnergyCapacity',
-        t('EnergyMeter.Energy'),
-        (item: DimItem) =>
-          (item.isDestiny2() &&
-            item.energy && {
-              statHash: item.energy.energyType,
-              value: item.energy.energyCapacity,
-            }) ||
-          undefined
-      )
-    );
-  }
-
-  // Todo: map of stat id => stat object
-  // add 'em up
-  const statsByHash: { [statHash: string]: StatInfo } = {};
-  for (const item of comparisonItems) {
-    if (item.stats) {
-      for (const stat of item.stats) {
-        let statInfo = statsByHash[stat.statHash];
-        if (!statInfo) {
-          statInfo = {
-            id: stat.statHash,
-            displayProperties: stat.displayProperties,
-            min: Number.MAX_SAFE_INTEGER,
-            max: 0,
-            enabled: false,
-            lowerBetter: false,
-            getStat(item: DimItem) {
-              return item.stats ? item.stats.find((s) => s.statHash === stat.statHash) : undefined;
-            },
-          };
-          statsByHash[stat.statHash] = statInfo;
-          stats.push(statInfo);
-        }
-      }
+    if (fullMasterworkPlug) {
+      return applySocketOverrides(itemCreationContext, i, {
+        [masterworkSocket.socketIndex]: fullMasterworkPlug.plugDef.hash,
+      });
     }
   }
 
-  for (const stat of stats) {
-    for (const item of comparisonItems) {
-      const itemStat = stat.getStat(item);
-      if (itemStat) {
-        stat.min = Math.min(stat.min, itemStat.value || 0);
-        stat.max = Math.max(stat.max, itemStat.value || 0);
-        stat.enabled = stat.min !== stat.max;
-        stat.lowerBetter = isDimStat(itemStat) ? itemStat.smallerIsBetter : false;
-      }
-    }
-  }
-
-  return stats;
+  return i;
 }
-
-function isDimStat(stat: DimStat | any): stat is DimStat {
-  return Object.prototype.hasOwnProperty.call(stat as DimStat, 'smallerIsBetter');
-}
-
-function makeFakeStat(
-  id: string | number,
-  displayProperties: DestinyDisplayPropertiesDefinition | string,
-  getStat: StatGetter,
-  lowerBetter = false
-) {
-  if (typeof displayProperties === 'string') {
-    displayProperties = { name: displayProperties } as DestinyDisplayPropertiesDefinition;
-  }
-  return {
-    id,
-    displayProperties,
-    min: Number.MAX_SAFE_INTEGER,
-    max: 0,
-    enabled: false,
-    lowerBetter,
-    getStat,
-  };
-}
-
-export default withRouter(connect<StoreProps>(mapStateToProps)(Compare));

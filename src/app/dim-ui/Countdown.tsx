@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { t } from 'app/i18next-t';
+import { i15dDurationFromMs } from 'app/utils/time';
+import { useEffect, useState } from 'react';
 
 /**
  * Render a countdown to a specific date.
@@ -7,48 +7,33 @@ import { t } from 'app/i18next-t';
 export default function Countdown({
   endTime,
   compact,
+  className,
 }: {
   endTime: Date;
   /** Render the time as a compact string instead of spelled out */
   compact?: boolean;
+  className?: string;
 }) {
   const [diff, setDiff] = useState(endTime.getTime() - Date.now());
-  const interval = useRef(0);
 
   useEffect(() => {
+    let interval = 0;
     const update = () => {
       const diff = endTime.getTime() - Date.now();
       // We set the diff just to make it re-render. We could just as easily set this to now(), or an incrementing number
       setDiff(diff);
       if (diff <= 0) {
-        clearInterval(interval.current);
+        clearInterval(interval);
       }
     };
-    interval.current = window.setInterval(update, 60000);
+    interval = window.setInterval(update, 60000);
     update();
-    return () => clearInterval(interval.current);
+    return () => clearInterval(interval);
   }, [endTime]);
 
   return (
-    <span className="countdown" title={endTime.toLocaleString()}>
-      {dhm(diff / 1000, compact)}
-    </span>
+    <time dateTime={endTime.toISOString()} className={className} title={endTime.toLocaleString()}>
+      {i15dDurationFromMs(diff, compact)}
+    </time>
   );
-}
-
-function pad(n: number, width: number) {
-  const s = String(n);
-  return s.length >= width ? s : new Array(width - s.length + 1).join('0') + s;
-}
-
-function dhm(seconds: number, compact = false) {
-  seconds = Math.max(0, seconds);
-  const days = Math.floor(seconds / 86400);
-  seconds %= 86400; // seconds with full days taken out
-  const hours = Math.floor(seconds / 3600);
-  seconds %= 3600; // seconds with full hours taken out
-  const minutes = Math.floor(seconds / 60);
-  const hhMM = `${hours}:${pad(minutes, 2)}`;
-  const context = compact ? 'compact' : ''; // t('Countdown.Days_compact')
-  return days ? `${t('Countdown.Days', { count: days, context })} ${hhMM}` : `${hhMM}`;
 }

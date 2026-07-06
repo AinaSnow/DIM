@@ -1,5 +1,3 @@
-import React from 'react';
-
 export default function HighlightedText({
   text,
   startIndex,
@@ -16,7 +14,7 @@ export default function HighlightedText({
   const end = text.slice(endIndex);
 
   if (!middle) {
-    return text as any;
+    return <>{text}</>;
   }
 
   return (

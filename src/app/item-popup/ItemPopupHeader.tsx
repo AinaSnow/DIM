@@ -1,205 +1,114 @@
-import React from 'react';
-import { DimItem, D2Item } from '../inventory/item-types';
-import ItemTagSelector from './ItemTagSelector';
-import clsx from 'clsx';
-import { t } from 'app/i18next-t';
-import LockButton from './LockButton';
-import ExternalLink from '../dim-ui/ExternalLink';
-import { AppIcon, faClone, faChevronCircleUp, openDropdownIcon } from '../shell/icons';
-import { CompareService } from '../compare/compare.service';
-import { ammoTypeClass } from './ammo-type';
-import ExpandedRating from './ExpandedRating';
-import './ItemPopupHeader.scss';
-import { hideItemPopup } from './item-popup';
-import { DestinyClass, DamageType } from 'bungie-api-ts/destiny2';
-import ElementIcon from 'app/inventory/ElementIcon';
-import { getItemDamageShortName } from 'app/utils/item-utils';
-import { getItemPowerCapFinalSeason } from 'app/utils/item-utils';
-import { PowerCapDisclaimer } from 'app/dim-ui/PowerCapDisclaimer';
-import BungieImage from 'app/dim-ui/BungieImage';
+import ArmorySheet from 'app/armory/ArmorySheet';
+import { itemConstants } from 'app/destiny2/d2-definitions';
+import BungieImage, { bungieBackgroundStyles } from 'app/dim-ui/BungieImage';
+import ElementIcon from 'app/dim-ui/ElementIcon';
+import RichDestinyText from 'app/dim-ui/destiny-symbols/RichDestinyText';
 import { useHotkey } from 'app/hotkeys/useHotkey';
+import { t } from 'app/i18next-t';
+import type { ItemRarityName } from 'app/search/d2-known-values';
+import { compact } from 'app/utils/collections';
+import { itemTypeName } from 'app/utils/item-utils';
+import { LookupTable } from 'app/utils/util-types';
+import clsx from 'clsx';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import { useState } from 'react';
+import { DimItem } from '../inventory/item-types';
+import { AmmoIcon } from './AmmoIcon';
+import * as styles from './ItemPopupHeader.m.scss';
+
+const rarityClassName: LookupTable<ItemRarityName, string> = {
+  Common: styles.common,
+  Uncommon: styles.uncommon,
+  Rare: styles.rare,
+  Legendary: styles.legendary,
+  Exotic: styles.exotic,
+};
 
 export default function ItemPopupHeader({
   item,
-  expanded,
-  showToggle,
-  language,
-  onToggleExpanded,
+  noLink,
 }: {
   item: DimItem;
-  expanded: boolean;
-  showToggle: boolean;
-  language: string;
-  onToggleExpanded(): void;
+  /** Don't allow opening Armory from the header link */
+  noLink?: boolean;
 }) {
-  const hasLeftIcon = item.trackable || item.lockable || item.element;
-  const openCompare = () => {
-    hideItemPopup();
-    CompareService.addItemsToCompare([item], true);
-  };
+  const [showArmory, setShowArmory] = useState(false);
+  useHotkey('a', t('Hotkey.Armory'), () => setShowArmory(true));
 
-  const hasDetails = Boolean(
-    item.stats?.length ||
-      item.talentGrid ||
-      item.objectives ||
-      (item.isDestiny2() && item.flavorObjective) ||
-      item.secondaryIcon
-  );
-  const showDescription = Boolean(item.description?.length);
-  const showDetailsByDefault = !item.equipment && item.notransfer;
+  const showElementIcon = Boolean(item.element);
 
-  const light = item.primStat?.value.toString();
-  const maxLight = item.isDestiny2() && item.powerCap;
+  const linkToArmory = !noLink && item.destinyVersion === 2;
 
-  useHotkey('t', t('Hotkey.ToggleDetails'), onToggleExpanded);
-
-  const classType =
-    item.classType !== DestinyClass.Unknown &&
-    // These already include the class name
-    item.type !== 'ClassItem' &&
-    item.type !== 'Artifact' &&
-    item.type !== 'Class' &&
-    !item.classified &&
-    item.classTypeNameLocalized[0].toUpperCase() + item.classTypeNameLocalized.slice(1);
-
-  const subtitleData = {
-    light,
-    maxLight,
-    statName: item.primStat?.stat.displayProperties.name,
-    classType: classType ? classType : ' ',
-    typeName: item.typeName,
-  };
-
-  const lightString = light
-    ? t('MovePopup.Subtitle.Gear', subtitleData)
-    : t('MovePopup.Subtitle.Consumable', subtitleData);
-
-  const finalSeason = item.isDestiny2() && item.powerCap && getItemPowerCapFinalSeason(item);
-  const powerCapString =
-    light &&
-    maxLight &&
-    (finalSeason
-      ? t('Stats.PowerCapWithSeason', { powerCap: maxLight, finalSeason })
-      : t('MovePopup.PowerCap', { powerCap: maxLight }));
   return (
-    <div
-      className={clsx('item-header', `is-${item.tier}`, {
-        masterwork: item.isDestiny2() && item.masterwork,
+    <button
+      type="button"
+      disabled={!linkToArmory}
+      className={clsx(styles.header, rarityClassName[item.rarity], {
+        [styles.masterwork]: item.masterwork,
+        [styles.pursuit]: item.pursuit,
+        [styles.armory]: linkToArmory,
       })}
+      title={linkToArmory ? `${t('Hotkey.Armory')} [A]` : undefined}
+      aria-keyshortcuts={linkToArmory ? 'a' : undefined}
+      onClick={() => setShowArmory(true)}
     >
-      <div className="item-title-container">
-        {hasLeftIcon && (
-          <div className="icon">
-            {item.lockable && <LockButton item={item} type="lock" />}
-            {item.trackable && <LockButton item={item} type="track" />}
-          </div>
-        )}
-        <div className="item-title-link">
-          <ExternalLink href={destinyDBLink(item, language)} className="item-title">
-            {item.name}
-          </ExternalLink>
+      {!linkToArmory ? (
+        <span className={styles.title}>{item.name}</span>
+      ) : (
+        <h1 className={styles.title}>
+          <RichDestinyText text={item.name} ownerId={item.vendor?.characterId ?? item.owner} />
+        </h1>
+      )}
+      <div className={styles.subtitle}>
+        <div className={styles.type}>
+          <div className={styles.itemType}>{itemTypeName(item)}</div>
+          {item.destinyVersion === 2 && item.ammoType > 0 && <AmmoIcon type={item.ammoType} />}
         </div>
-        {item.comparable && (
-          <a className="compare-button info" title={t('Compare.ButtonHelp')} onClick={openCompare}>
-            <AppIcon icon={faClone} />
-          </a>
-        )}
-        {showToggle && !showDetailsByDefault && (showDescription || hasDetails) && (
-          <div className="info" onClick={onToggleExpanded}>
-            <AppIcon icon={expanded ? faChevronCircleUp : openDropdownIcon} />
-          </div>
-        )}
-      </div>
 
-      <div className="item-subtitle">
-        {hasLeftIcon &&
-          item.element &&
-          !(item.bucket.inWeapons && item.element.enumValue === DamageType.Kinetic) && (
-            <div className="icon">
-              <ElementIcon
-                element={item.element}
-                className={clsx('element', getItemDamageShortName(item))}
-              />
+        <div className={styles.details}>
+          {showElementIcon && <ElementIcon element={item.element} className={styles.elementIcon} />}
+          <div className={styles.power}>{item.primaryStat?.value}</div>
+          {item.maxStackSize > 1 &&
+            !item.itemCategoryHashes.includes(ItemCategoryHashes.Mods_Ornament) && (
+              <div className={styles.itemType}>
+                {item.amount.toLocaleString()} / {item.maxStackSize.toLocaleString()}
+              </div>
+            )}
+          {item.pursuit?.questLine && (
+            <div className={styles.itemType}>
+              {t('MovePopup.Subtitle.QuestProgress', {
+                questStepNum: item.pursuit.questLine.questStepNum,
+                questStepsTotal: item.pursuit.questLine.questStepsTotal,
+              })}
             </div>
           )}
-        {item.isDestiny2() && item.ammoType > 0 && (
-          <div className={clsx('ammo-type', ammoTypeClass(item.ammoType))} />
-        )}
-        {item.isDestiny2() && item.breakerType && (
-          <BungieImage className="small-icon" src={item.breakerType.displayProperties.icon} />
-        )}
-        <div className="item-type-info">{lightString}</div>
-        {item.taggable && <ItemTagSelector item={item} />}
-      </div>
-      {powerCapString && (
-        <div className="item-subtitle">
-          <div>{`${t('Stats.PowerCap')}: ${powerCapString}`}</div>
-          <PowerCapDisclaimer item={item} />
         </div>
+      </div>
+      {item.iconDef?.secondaryBackground && <SeasonTierBanner item={item} />}
+      {showArmory && linkToArmory && (
+        <ArmorySheet onClose={() => setShowArmory(false)} item={item} />
       )}
-      {$featureFlags.reviewsEnabled && item.reviewable && <ExpandedRating item={item} />}
-    </div>
+    </button>
   );
 }
 
-function destinyDBLink(item: DimItem, language: string) {
-  // DTR 404s on the new D2 languages for D1 items
-  if (item.destinyVersion === 1) {
-    switch (language) {
-      case 'es-mx':
-        language = 'es';
-        break;
-      case 'pl':
-      case 'ru':
-      case 'zh-cht':
-      case 'zh-chs':
-        language = 'en';
-        break;
-    }
-
-    return `http://db.destinytracker.com/d${item.destinyVersion}/${language}/items/${item.hash}`;
+function SeasonTierBanner({ item }: { item: DimItem }) {
+  if (!item.iconDef || !itemConstants) {
+    return null;
   }
-
-  const d2Item = item as D2Item;
-  let perkQueryString = '';
-
-  if (d2Item) {
-    const perkCsv = buildPerksCsv(d2Item);
-    // to-do: if buildPerksCsv typing is correct, and can only return a string, lines 142-150 could be a single line
-    if (perkCsv?.length) {
-      perkQueryString = `?perks=${perkCsv}`;
-    }
+  const seasonIcon = item.iconDef.secondaryBackground;
+  const backgrounds = compact([
+    // Tier pips
+    item.tier > 0 && itemConstants.gearTierOverlayImagePaths[Math.min(item.tier - 1, 4)],
+    // Black stripe
+    item.iconDef.secondaryBackground && itemConstants.watermarkDropShadowPath,
+  ]);
+  if (!seasonIcon && backgrounds.length === 0) {
+    return null;
   }
-
-  return `https://destinytracker.com/destiny-2/db/items/${item.hash}${perkQueryString}`;
-}
-
-/**
- * Banshee-44 puts placeholder entries in for the still-mysterious socketTypeHash 0.
- * If you look at Scathelocke https://data.destinysets.com/i/InventoryItem:3762467078
- * for one example, socketEntires[5] has a socketTypeHash of 0. We discard this
- * (and other sockets), as we build our definition of sockets we care about, so
- * I look for gaps in the index and drop a zero in where I see them.
- */
-function buildPerksCsv(item: D2Item): string {
-  const perkValues: number[] = [];
-
-  if (item.sockets) {
-    item.sockets.allSockets.forEach((socket, socketIndex) => {
-      if (socketIndex > 0) {
-        const currentSocketPosition = socket.socketIndex;
-        const priorSocketPosition = item.sockets!.allSockets[socketIndex - 1].socketIndex;
-
-        if (currentSocketPosition > priorSocketPosition + 1) {
-          perkValues.push(0);
-        }
-      }
-
-      if (socket.plugged) {
-        perkValues.push(socket.plugged.plugDef.hash);
-      }
-    });
-  }
-
-  return perkValues.join(',');
+  return (
+    <div className={styles.iconOverlay} style={bungieBackgroundStyles(backgrounds)}>
+      {seasonIcon && <BungieImage src={seasonIcon} />}
+    </div>
+  );
 }

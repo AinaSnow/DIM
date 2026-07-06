@@ -1,61 +1,71 @@
 import { t } from 'app/i18next-t';
-import _ from 'lodash';
-import React from 'react';
-import { DimStore } from '../../inventory/store-types';
-import { newLoadout, convertToLoadoutItem } from '../../loadout/loadout-utils';
-import { ArmorSet } from '../types';
-import styles from './GeneratedSetButtons.m.scss';
+import { DimItem, PluggableInventoryItemDefinition } from 'app/inventory/item-types';
+import { DimStore } from 'app/inventory/store-types';
+import { applyLoadout } from 'app/loadout-drawer/loadout-apply';
+import { editLoadout } from 'app/loadout-drawer/loadout-events';
 import { Loadout } from 'app/loadout/loadout-types';
-import { applyLoadout } from 'app/loadout/loadout-apply';
-import { DestinyClass } from 'bungie-api-ts/destiny2';
-import { statTier } from '../utils';
+import { loadoutSavedSelector } from 'app/loadout/selectors';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { Dispatch } from 'react';
+import { useSelector } from 'react-redux';
+import { LoadoutBuilderAction } from '../loadout-builder-reducer';
+import { ArmorSet } from '../types';
+import { updateLoadoutWithArmorSet } from '../updated-loadout';
+import * as styles from './GeneratedSetButtons.m.scss';
 
 /**
  * Renders the Create Loadout and Equip Items buttons for each generated set
  */
 export default function GeneratedSetButtons({
+  originalLoadout,
   store,
   set,
-  onLoadoutSet,
+  items,
+  lockedMods,
+  canCompareLoadouts,
+  lbDispatch,
 }: {
+  originalLoadout: Loadout;
   store: DimStore;
   set: ArmorSet;
-  onLoadoutSet(loadout: Loadout): void;
+  /** The list of items to use - these are chosen from the set's options and match what's displayed. */
+  items: DimItem[];
+  lockedMods: PluggableInventoryItemDefinition[];
+  canCompareLoadouts: boolean;
+  lbDispatch: Dispatch<LoadoutBuilderAction>;
 }) {
+  const defs = useD2Definitions()!;
+  const dispatch = useThunkDispatch();
+  const loadout = () => updateLoadoutWithArmorSet(defs, originalLoadout, set, items, lockedMods);
+  const isSaved = useSelector(loadoutSavedSelector(originalLoadout.id));
+
   // Opens the loadout menu for the generated set
-  const openLoadout = () => {
-    onLoadoutSet(createLoadout(store.classType, set));
-  };
+  const openLoadout = () =>
+    editLoadout(loadout(), store.id, {
+      showClass: false,
+    });
 
   // Automatically equip items for this generated set to the active store
-  const equipItems = () => {
-    const loadout = createLoadout(store.classType, set);
-    return applyLoadout(store, loadout, true);
-  };
+  const equipItems = () => dispatch(applyLoadout(store, loadout(), { allowUndo: true }));
 
   return (
     <div className={styles.buttons}>
       <button type="button" className="dim-button" onClick={openLoadout}>
-        {t('LoadoutBuilder.CreateLoadout')}
+        {isSaved ? t('Loadouts.UpdateLoadout') : t('Loadouts.SaveLoadout')}
       </button>
+      {canCompareLoadouts && (
+        <button
+          type="button"
+          className="dim-button"
+          onClick={() => lbDispatch({ type: 'openCompareDrawer', set, items })}
+        >
+          {t('LoadoutBuilder.CompareLoadout')}
+        </button>
+      )}
       <button type="button" className="dim-button" onClick={equipItems}>
         {t('LoadoutBuilder.EquipItems', { name: store.name })}
       </button>
     </div>
   );
-}
-
-/**
- * Create a Loadout object, used for equipping or creating a new saved loadout
- */
-function createLoadout(classType: DestinyClass, set: ArmorSet): Loadout {
-  const data = {
-    tier: _.sumBy(Object.values(set.stats), statTier),
-  };
-  const loadout = newLoadout(
-    t('Loadouts.Generated', data),
-    set.armor.map((items) => convertToLoadoutItem(items[0], true))
-  );
-  loadout.classType = classType;
-  return loadout;
 }

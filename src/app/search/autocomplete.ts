@@ -1,8 +1,12 @@
-import { SearchConfig } from './search-config';
-import _ from 'lodash';
 import { Search } from '@destinyitemmanager/dim-api-types';
+import { compact, filterMap, uniqBy } from 'app/utils/collections';
 import { chainComparator, compareBy, reverseComparator } from 'app/utils/comparators';
-import memoizeOne from 'memoize-one';
+import { ArmoryEntry, getArmorySuggestions } from './armory-search';
+import { filterDescriptionText } from './filter-description';
+import { canonicalFilterFormats } from './filter-types';
+import { lexer, makeCommentString, parseQuery, QueryLexerError } from './query-parser';
+import { FiltersMap, SearchConfig, Suggestion } from './search-config';
+import { plainString } from './text-utils';
 
 /** The autocompleter/dropdown will suggest different types of searches */
 export const enum SearchItemType {
@@ -16,22 +20,47 @@ export const enum SearchItemType {
   Autocomplete,
   /** Open help */
   Help,
-  // TODO: add types for exact-match item or perk that adds them to the query?
+  /** Open the armory view for a page */
+  ArmoryEntry,
+}
+
+export interface SearchQuery {
+  /** The full text of the query */
+  fullText: string;
+  /** The query's top-level comment */
+  header?: string;
+  /** The query text excluding the top-level comment */
+  body: string;
+  /** Help text */
+  helpText?: string;
+}
+
+interface BaseSearchItem {
+  type: SearchItemType;
+  /** The suggested query */
+  query: SearchQuery;
+  /** An optional part of the query that will be highlighted */
+  highlightRange?: {
+    section: 'header' | 'body';
+    /** The indices of the first and last character that should be highlighted */
+    range: [number, number];
+  };
+}
+
+export interface ArmorySearchItem extends BaseSearchItem {
+  type: SearchItemType.ArmoryEntry;
+  armoryItem: ArmoryEntry;
 }
 
 /** An item in the search autocompleter */
-export interface SearchItem {
-  type: SearchItemType;
-  /** The suggested query */
-  query: string;
-  /** An optional part of the query that will be highlighted */
-  highlightRange?: [number, number];
-  /** Help text */
-  helpText?: React.ReactNode;
-}
+export type SearchItem =
+  | ArmorySearchItem
+  | (BaseSearchItem & {
+      type: Exclude<SearchItemType, SearchItemType.ArmoryEntry>;
+    });
 
-/** matches a keyword that's probably a math comparison */
-const mathCheck = /[\d<>=]/;
+/** matches a keyword that's probably a math comparison, but not with a value on the RHS */
+const mathCheck = /[\d<>=]$/;
 
 /** if one of these has been typed, stop guessing which filter and just offer this filter's values */
 // TODO: Generate this from the search config
@@ -46,61 +75,87 @@ const filterNames = [
   'source',
   'perk',
   'perkname',
+  'mod',
+  'modname',
   'name',
   'description',
+  'dupe',
 ];
 
 /**
  * Produce a memoized autocompleter function that takes search text plus a list of recent/saved searches
  * and produces the contents of the autocomplete list.
  */
-export default function createAutocompleter(searchConfig: SearchConfig) {
+export default function createAutocompleter<I, FilterCtx, SuggestionsCtx>(
+  searchConfig: SearchConfig<I, FilterCtx, SuggestionsCtx>,
+  armoryEntries: ArmoryEntry[] | undefined,
+) {
   const filterComplete = makeFilterComplete(searchConfig);
 
-  return memoizeOne((query: string, caretIndex: number, recentSearches: Search[]): SearchItem[] => {
+  return (
+    query: string,
+    caretIndex: number,
+    recentSearches: Search[],
+    includeArmory?: boolean,
+    maxResults = 7,
+  ): SearchItem[] => {
     // If there's a query, it's always the first entry
-    const queryItem = query
+    const queryItem: SearchItem | undefined = query
       ? {
           type: SearchItemType.Autocomplete,
-          query: query,
+          query: {
+            fullText: query,
+            body: query,
+          },
         }
       : undefined;
     // Generate completions of the current search
-    const filterSuggestions = autocompleteTermSuggestions(query, caretIndex, filterComplete);
+    const filterSuggestions = autocompleteTermSuggestions(
+      query,
+      caretIndex,
+      filterComplete,
+      searchConfig,
+    );
 
     // Recent/saved searches
     const recentSearchItems = filterSortRecentSearches(query, recentSearches);
 
     // Help is always last...
     // Add an item for opening the filter help
-    const helpItem = {
+    const helpItem: SearchItem = {
       type: SearchItemType.Help,
-      query: query || '', // use query as the text so we don't change text when selecting it
+      query: {
+        // use query as the text so we don't change text when selecting it
+        fullText: query || '',
+        body: query || '',
+      },
     };
+
+    const armorySuggestions = includeArmory
+      ? getArmorySuggestions(armoryEntries, query, searchConfig.language)
+      : [];
 
     // mix them together
     return [
-      ..._.take(
-        _.uniqBy(
-          _.compact([queryItem, ...filterSuggestions, ...recentSearchItems]),
-          (i) => i.query
-        ),
-        7
-      ),
+      ...uniqBy(
+        compact([queryItem, ...filterSuggestions, ...recentSearchItems]),
+        (i) => i.query.fullText,
+      ).slice(0, maxResults),
+      ...armorySuggestions,
       helpItem,
     ];
-  });
+  };
 }
 
 // TODO: this should probably be different when there's a query vs not. With a query
 // it should sort on how closely you match, while without a query it's just offering
 // you your "favorite" searches.
-const recentSearchComparator = reverseComparator(
+export const recentSearchComparator = reverseComparator(
   chainComparator<Search>(
     // Saved searches before recents
     compareBy((s) => s.saved),
-    compareBy((s) => frecency(s.usageCount, s.lastUsage))
-  )
+    compareBy((s) => frecency(s.usageCount, s.lastUsage)),
+  ),
 );
 
 /**
@@ -135,38 +190,121 @@ function normalizeRecency(timestamp: number) {
   return Math.pow(2, -days / halfLife);
 }
 
-export function filterSortRecentSearches(query: string, recentSearches: Search[]) {
+export function filterSortRecentSearches(query: string, recentSearches: Search[]): SearchItem[] {
   // Recent/saved searches
-  // TODO: Filter recent searches by query
-  // TODO: Sort recent searches by relevance (time+usage+saved)
-  // TODO: don't show results that exactly match the input
-  // TODO: need a better way to search recent queries
-  // TODO: if there are a ton of recent/saved searches, this sorting might get expensive. Maybe sort them in the Redux store if
-  //       we aren't going to do different sorts for query vs. non-query
+  const qLower = query.toLowerCase();
   const recentSearchesForQuery = query
-    ? recentSearches.filter((s) => s.query.includes(query))
+    ? recentSearches.filter((s) => {
+        const sQueryLower = s.query.toLowerCase();
+        return sQueryLower !== qLower && sQueryLower.includes(qLower);
+      })
     : Array.from(recentSearches);
-  return recentSearchesForQuery.sort(recentSearchComparator).map((s) => ({
-    type: s.saved
-      ? SearchItemType.Saved
-      : s.usageCount > 0
-      ? SearchItemType.Recent
-      : SearchItemType.Suggested,
-    query: s.query,
-  }));
+
+  return recentSearchesForQuery.sort(recentSearchComparator).map((s) => {
+    const ast = parseQuery(s.query);
+    const topLevelComment = ast.comment && makeCommentString(ast.comment);
+    const result: SearchItem = {
+      type: s.saved
+        ? SearchItemType.Saved
+        : s.usageCount > 0
+          ? SearchItemType.Recent
+          : SearchItemType.Suggested,
+      query: {
+        fullText: s.query,
+        header: ast.comment,
+        body: topLevelComment ? s.query.substring(topLevelComment.length).trim() : s.query,
+      },
+    };
+
+    // highlight the matched range of the query
+    if (query) {
+      if (result.query.header) {
+        const index = result.query.header.toLowerCase().indexOf(qLower);
+        if (index !== -1) {
+          result.highlightRange = {
+            section: 'header',
+            range: [index, index + query.length],
+          };
+        }
+      }
+      if (!result.highlightRange) {
+        const index = result.query.body.toLowerCase().indexOf(qLower);
+        if (index !== -1) {
+          result.highlightRange = {
+            section: 'body',
+            range: [index, index + query.length],
+          };
+        }
+      }
+    }
+
+    return result;
+  });
 }
 
-const caretEndRegex = /([\s)]|$)/;
+const caretEndRegex = /[\s)]|$/;
+
+/**
+ * Find the position of the last "incomplete" filter segment of the query before the caretIndex.
+ *
+ * For example, given the query (with the caret at |):
+ * name:foo bar| baz
+ * This should return { term: "bar", index: 9 }
+ *
+ * @returns the start indexes of various points that could be incomplete filters
+ */
+function findLastFilter(queryUpToCaret: string): number[] | null {
+  // Find the indexes where any incomplete filter starts. For example if the query is:
+  // name:"foo" bar baz
+  // then the open keywords are "bar baz" and "baz"
+  let incompleteFilterIndices: number[] = [];
+  try {
+    // We can use the query lexer for this to scan through tokens in the query without parsing the whole AST.
+    for (const token of lexer(queryUpToCaret)) {
+      switch (token.type) {
+        // We're trying to complete any filter. Maybe it's actually complete, which is OK because we just won't return a suggestion
+        case 'filter': {
+          if (
+            // Ignore complete quoted tokens, they're definitively finished.
+            !token.quoted
+          ) {
+            incompleteFilterIndices.push(token.startIndex);
+          } else {
+            incompleteFilterIndices = [];
+          }
+          break;
+        }
+        case 'and':
+        case 'or':
+        case 'implicit_and':
+          // ignore these - they neither start an incomplete filter section, nor end it
+          break;
+        default:
+          // reset, we saw something that's definitely not part of a filter
+          incompleteFilterIndices = [];
+          break;
+      }
+    }
+  } catch (e) {
+    // If the lexer failed because of unmatched quotes, that's *definitely* something to autocomplete!
+    if (e instanceof QueryLexerError) {
+      incompleteFilterIndices = [e.startIndex];
+    }
+  }
+
+  return incompleteFilterIndices;
+}
 
 /**
  * Given a query and a cursor position, isolate the term that's being typed and offer reformulated queries
  * that replace that term with one from our filterComplete function.
  */
-export function autocompleteTermSuggestions(
+export function autocompleteTermSuggestions<I, FilterCtx, SuggestionsCtx>(
   query: string,
   caretIndex: number,
-  filterComplete: (term: string) => string[]
-) {
+  filterComplete: (term: string) => string[],
+  searchConfig: SearchConfig<I, FilterCtx, SuggestionsCtx>,
+): SearchItem[] {
   if (!query) {
     return [];
   }
@@ -174,75 +312,228 @@ export function autocompleteTermSuggestions(
   // Seek to the end of the current part
   caretIndex = (caretEndRegex.exec(query.slice(caretIndex))?.index || 0) + caretIndex;
 
-  // Find the last word that looks like a search
-  const match = /\b([\w:"']{3,})$/i.exec(query.slice(0, caretIndex));
-  if (match) {
-    const term = match[1];
-    const candidates = filterComplete(term);
-    const base = query.slice(0, match.index);
-
-    // new query is existing query minus match plus suggestion
-    return candidates.map((word) => {
-      const newQuery = base + word + query.slice(caretIndex);
-      return {
-        query: newQuery,
-        type: SearchItemType.Autocomplete,
-        highlightRange: [match.index, match.index + word.length],
-        // TODO: help from the matched query
-      };
-    });
+  const queryUpToCaret = query.slice(0, caretIndex);
+  const lastFilters = findLastFilter(queryUpToCaret);
+  if (!lastFilters) {
+    return [];
   }
 
+  // Find the first index that gives us suggestions and return those suggestions
+  for (const index of lastFilters) {
+    const base = query.slice(0, index);
+    const term = queryUpToCaret.substring(index);
+    const candidates = filterComplete(term);
+
+    // new query is existing query minus match plus suggestion
+    const result = candidates.map((word): SearchItem => {
+      const filterDef = findFilter(word, searchConfig.filtersMap);
+      const newQuery = base + word + query.slice(caretIndex);
+      const helpText: string | undefined = filterDef
+        ? filterDescriptionText(filterDef.description)
+        : undefined;
+      return {
+        query: {
+          fullText: newQuery,
+          body: newQuery,
+          helpText: helpText?.replace(/\.$/, ''),
+        },
+        type: SearchItemType.Autocomplete,
+        highlightRange: {
+          section: 'body',
+          range: [index, index + word.length],
+        },
+      };
+    });
+    if (result.length) {
+      return result;
+    }
+  }
   return [];
+}
+
+function findFilter<I, FilterCtx, SuggestionsCtx>(
+  term: string,
+  filtersMap: FiltersMap<I, FilterCtx, SuggestionsCtx>,
+) {
+  const parts = term.split(':');
+  const filterName = parts[0];
+  const filterValue = parts[1];
+  // "is:" filters are slightly special cased
+  return filterName === 'is' ? filtersMap.isFilters[filterValue] : filtersMap.kvFilters[filterName];
 }
 
 /**
  * This builds a filter-complete function that uses the given search config's keywords to
  * offer autocomplete suggestions for a partially typed term.
  */
-export function makeFilterComplete(searchConfig: SearchConfig) {
+export function makeFilterComplete<I, FilterCtx, SuggestionsCtx>(
+  searchConfig: SearchConfig<I, FilterCtx, SuggestionsCtx>,
+) {
+  // these filters might include quotes, so we search for two text segments to ignore quotes & colon
+  // i.e. `name:test` can find `name:"test item"`
+  const freeformTerms: string[] = [];
+  const multiqueryTermsLookup: NodeJS.Dict<string[]> = {};
+  for (const filter of Object.values(searchConfig.filtersMap.kvFilters)) {
+    const formats = canonicalFilterFormats(filter.format);
+    if (formats.includes('freeform')) {
+      for (const k of filter.keywords) {
+        freeformTerms.push(`${k}:`);
+      }
+    }
+    if (formats.includes('multiquery')) {
+      for (const k of filter.keywords) {
+        (multiqueryTermsLookup[k] ??= []).push(...(filter.suggestions ?? []));
+      }
+    }
+  }
+
   // TODO: also search filter descriptions
-  // TODO: also search individual items from the manifest???
-  return (term: string): string[] => {
-    if (!term) {
+  return (typed: string): string[] => {
+    if (!typed) {
       return [];
     }
+    const typedToLower = typed.toLowerCase();
+    let typedPlain = plainString(typedToLower, searchConfig.language);
+    const typedSegments = typedPlain.split(':');
+    const possibleKeyword = typedSegments[0];
 
-    const lowerTerm = term.toLowerCase();
+    // because we are fighting against other elements for space in the suggestion dropdown,
+    // we will entirely skip "not" and "<" and ">" and "<=" and ">=" suggestions,
+    // unless the user seems to explicity be working toward them
+    const hasNotModifier = typedPlain.startsWith('not');
+    const includesAdvancedMath =
+      typedPlain.endsWith(':') || typedPlain.endsWith('<') || typedPlain.endsWith('<');
+    const filterLowPrioritySuggestions = (s: Suggestion) =>
+      (hasNotModifier || !s.plainText.startsWith('not:')) &&
+      (includesAdvancedMath || !/[<>]=?$/.test(s.plainText));
 
-    let words = term.includes(':') // with a colon, only match from beginning
-      ? // ("stat:" matches "stat:" but not "basestat:")
-        searchConfig.keywords.filter((word) => word.startsWith(lowerTerm))
-      : // ("stat" matches "stat:" and "basestat:")
-        searchConfig.keywords.filter((word) => word.includes(lowerTerm));
+    let mustStartWith = '';
+    if (freeformTerms.some((t) => typedPlain.startsWith(t))) {
+      mustStartWith = typedSegments.shift()!;
+      typedPlain = typedSegments.join(':');
+    }
+
+    // for most searches (non-string-based), if there's already a colon typed,
+    // we are on a path through known terms, not wildly guessing, so we only match
+    // from beginning of the typed string, instead of middle snippets from suggestions.
+
+    // this way, "stat:" matches "stat:" but not "basestat:"
+    // and "stat" matches "stat:" and "basestat:"
+    const matchType = !mustStartWith && typedPlain.includes(':') ? 'startsWith' : 'includes';
+
+    let suggestions = searchConfig.suggestions
+      .filter(
+        (word) => word.plainText.startsWith(mustStartWith) && word.plainText[matchType](typedPlain),
+      )
+      .filter(filterLowPrioritySuggestions);
 
     // TODO: sort this first?? it depends on term in one place
-    words = words.sort(
+
+    if (multiqueryTermsLookup[possibleKeyword] && filterNames.includes(possibleKeyword)) {
+      // For multiquery filters, if the user has typed a + (or hasn't typed
+      // anything) they're looking to add another query term, so offer to append
+      // one.
+      const existingTerms = new Set(
+        (typedSegments[1] || '')
+          .split('+')
+          .filter((t) => multiqueryTermsLookup[possibleKeyword]!.includes(t)),
+      );
+      const stem = `${typedSegments[0]}:${[...existingTerms].join('+')}${existingTerms.size ? '+' : ''}`;
+      suggestions.push(
+        ...filterMap(multiqueryTermsLookup[possibleKeyword], (t) => {
+          if (!existingTerms.has(t)) {
+            const newTerm = stem + t;
+            return {
+              rawText: newTerm,
+              plainText: newTerm,
+            };
+          }
+        }),
+      );
+    }
+
+    suggestions = suggestions.sort(
       chainComparator(
+        // ---------------
+        // assumptions based on user behavior. beyond the "contains" filter above, considerations like
+        // "the user is probably typing the begining of the filter name, not the middle"
+        // ---------------
+
+        // prioritize terms where we are typing the beginning of, ignoring the stem:
+        // 'stat' -> 'stat:' before 'basestat:'
+        // 'arm' -> 'is:armor' before 'is:sidearm'
+        // but only for top level stuff (we want examples like 'basestat:' before 'stat:rpm:')
+        compareBy(
+          (word) =>
+            colonCount(word.plainText) > 1
+              ? 1 // last if it's a big one like 'stat:rpm:'
+              : word.plainText.startsWith(typedPlain) ||
+                  word.plainText.indexOf(typedPlain) === word.plainText.indexOf(':') + 1
+                ? -1 // first if it's a term start or segment start
+                : 0, // mid otherwise
+        ),
+
+        // ---------------
+        // once we have accounted for high level assumptions about user input,
+        // make some opinionated choices about which filters are a priority
+        // ---------------
+
         // tags are UGC and therefore important
-        compareBy((word) => !word.startsWith('tag:')),
-        // prioritize is: & not: because a pair takes up only 2 slots at the top,
-        // vs filters that end in like 8 statnames
-        compareBy((word) => !(word.startsWith('is:') || word.startsWith('not:'))),
-        // sort incomplete terms (ending with ':') to the front
-        compareBy((word) => !word.endsWith(':')),
+        compareBy((word) => !word.plainText.startsWith('tag:')),
+
+        // push "not" and "<=" and ">=" to the bottom if they are present
+        // we discourage "not", and "<=" and ">=" are highly discoverable from "<" and ">"
+        compareBy(
+          (word) =>
+            word.plainText.startsWith('not:') ||
+            word.plainText.includes(':<=') ||
+            word.plainText.includes(':>='),
+        ),
+
         // sort more-basic incomplete terms (fewer colons) to the front
-        compareBy((word) => word.split(':').length),
-        // prioritize strings we are typing the beginning of
-        compareBy((word) => word.indexOf(term.toLowerCase()) !== 0),
-        // prioritize words with less left to type
-        compareBy((word) => word.length - (term.length + word.indexOf(lowerTerm))),
+        // i.e. suggest "stat:" before "stat:magazine:"
+        compareBy((word) => (word.plainText.startsWith('is:') ? 0 : colonCount(word.plainText))),
+
+        // for is/not, prioritize words with less left to type,
+        // so "is:armor" comes before "is:armormod".
+        // but only is/not, not other list-based suggestions,
+        // otherwise it prioritizes "dawn" over "redwar" after you type "season:"
+        // which i am not into.
+        compareBy((word) => {
+          if (word.plainText.startsWith('not:') || word.plainText.startsWith('is:')) {
+            return word.plainText.length - (typedPlain.length + word.plainText.indexOf(typedPlain));
+          } else {
+            return 0;
+          }
+        }),
+
+        // sort incomplete terms (ending with ':') to the front
+        compareBy((word) => !word.plainText.endsWith(':')),
+
+        // (within the math operators that weren't shoved to the far bottom,)
         // push math operators to the front for things like "masterwork:"
-        compareBy((word) => !mathCheck.test(word))
-      )
+        compareBy((word) => !mathCheck.test(word.plainText)),
+      ),
     );
-    if (filterNames.includes(term.split(':')[0])) {
-      return words;
-    } else if (words.length) {
-      const deDuped = new Set([term, ...words]);
-      deDuped.delete(term);
+    if (suggestions.length) {
+      // we will always add in (later) a suggestion of "what you've already typed so far"
+      // so prevent "what's been typed" from appearing in the returned suggestions from this function
+      const deDuped = new Set(suggestions.map((suggestion) => suggestion.rawText));
+      deDuped.delete(typed);
+      deDuped.delete(typedToLower);
+      deDuped.delete(typedPlain);
       return [...deDuped];
     }
     return [];
   };
+}
+
+function colonCount(s: string) {
+  let count = 0;
+  for (const c of s) {
+    if (c === ':') {
+      count++;
+    }
+  }
+  return count;
 }

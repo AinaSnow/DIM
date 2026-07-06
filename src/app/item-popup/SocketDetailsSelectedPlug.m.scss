@@ -1,21 +1,24 @@
-@import '../variables.scss';
+@use '../variables.scss' as *;
 
 .selectedPlug {
   composes: flexRow from '../dim-ui/common.m.scss';
-  min-height: calc(var(--item-size) + 20px);
+  min-height: var(--item-size);
   display: grid;
-  grid-template-columns: var(--item-size) 1fr 1fr;
-  grid-template-areas:
-    'mod desc stat'
-    'mod modstat stat';
+  grid-template-columns: var(--item-size) 1fr;
+  grid-template-rows: min-content 1fr;
+  grid-template-areas: 'mod name button' 'mod desc button';
   gap: 0 8px;
+  max-height: min(25vh, 18em);
+
   @include phone-portrait {
     grid-template-columns: var(--item-size) 1fr;
+    grid-template-rows: min-content 1fr min-content;
     grid-template-areas:
+      'mod name'
       'mod desc'
-      'mod modstat'
-      'mod stat';
+      'mod button';
     gap: 8px 8px;
+    height: auto;
   }
 }
 
@@ -23,25 +26,46 @@
   composes: flexColumn from '../dim-ui/common.m.scss';
   align-items: center;
   grid-area: mod;
+
+  :global(.item-img) {
+    border-color: var(--theme-item-socket-border);
+  }
+}
+
+.modName {
+  grid-area: name;
+  font-weight: bold;
+  margin: 0;
 }
 
 .modDescription {
   composes: flexColumn from '../dim-ui/common.m.scss';
+  gap: 8px;
   grid-area: desc;
-  h3 {
-    font-weight: bold;
-    margin: 0;
+  overflow: auto;
+
+  @include phone-portrait {
+    max-height: 25vh;
   }
 }
+.modRequirement {
+  font-style: italic;
+}
 
-.modStats {
-  grid-area: modstat;
+.modClarityDescription {
+  border-left: 2px solid $communityBlue;
+  padding-left: 6px;
 }
 
 .itemStats {
-  grid-area: stat;
-  margin: 0;
-  height: min-content;
+  composes: flexColumn from '../dim-ui/common.m.scss';
+  gap: 8px;
+  max-width: 20em;
+}
+
+.source {
+  font-style: italic;
+  opacity: 0.7;
 }
 
 .material {
@@ -52,5 +76,45 @@
   img {
     height: 16px;
     width: 16px;
+    margin-right: 0;
+  }
+}
+
+.insertButton {
+  composes: dim-button from global;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  grid-area: button;
+  align-self: center;
+  transition: none;
+  gap: 8px;
+
+  > span {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+
+    @include phone-portrait {
+      flex-direction: row;
+      justify-content: space-between;
+    }
+  }
+}
+
+.insertLabel {
+  width: 100%;
+}
+
+.perk {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin: 2px 0 0 0;
+
+  img {
+    width: 17px;
+    height: 17px;
+    margin-right: 4px;
   }
 }

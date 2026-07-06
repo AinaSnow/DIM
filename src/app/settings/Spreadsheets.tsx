@@ -1,84 +1,57 @@
-import React from 'react';
-import { t } from 'app/i18next-t';
 import FileUpload from 'app/dim-ui/FileUpload';
-import { AppIcon, spreadsheetIcon } from '../shell/icons';
+import useConfirm from 'app/dim-ui/useConfirm';
+import { t } from 'app/i18next-t';
+import { storesLoadedSelector } from 'app/inventory/selectors';
 import { downloadCsvFiles, importTagsNotesFromCsv } from 'app/inventory/spreadsheets';
+import { downloadLoadoutsCsv } from 'app/loadout/spreadsheets';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { showNotification } from 'app/notifications/notifications';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { errorMessage } from 'app/utils/errors';
 import { DropzoneOptions } from 'react-dropzone';
-import { DimStore } from 'app/inventory/store-types';
-import { ItemInfos } from 'app/inventory/dim-item-info';
-import { connect } from 'react-redux';
-import { storesSelector, storesLoadedSelector, itemInfosSelector } from 'app/inventory/selectors';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
+import { useSelector } from 'react-redux';
+import { AppIcon, spreadsheetIcon } from '../shell/icons';
+import { settingClass } from './SettingsPage';
+import * as styles from './Spreadsheets.m.scss';
 
-interface StoreProps {
-  disabled?: boolean;
-  stores: DimStore[];
-  itemInfos: ItemInfos;
-}
+export default function Spreadsheets() {
+  const dispatch = useThunkDispatch();
+  const disabled = !useSelector(storesLoadedSelector);
+  const d2Defs = useD2Definitions();
 
-function mapStateToProps(state: RootState): StoreProps {
-  return {
-    disabled: !storesLoadedSelector(state),
-    stores: storesSelector(state),
-    itemInfos: itemInfosSelector(state),
-  };
-}
-
-type Props = StoreProps & ThunkDispatchProp;
-
-function Spreadsheets({ stores, itemInfos, disabled, dispatch }: Props) {
+  const [confirmDialog, confirm] = useConfirm();
   const importCsv: DropzoneOptions['onDrop'] = async (acceptedFiles) => {
     if (acceptedFiles.length < 1) {
-      alert(t('Csv.ImportWrongFileType'));
+      showNotification({ type: 'error', title: t('Csv.ImportWrongFileType') });
       return;
     }
 
-    if (!confirm(t('Csv.ImportConfirm'))) {
+    if (!(await confirm(t('Csv.ImportConfirm')))) {
       return;
     }
     try {
       const result = await dispatch(importTagsNotesFromCsv(acceptedFiles));
-      alert(t('Csv.ImportSuccess', { count: result }));
+      showNotification({ type: 'success', title: t('Csv.ImportSuccess', { count: result }) });
     } catch (e) {
-      alert(t('Csv.ImportFailed', { error: e.message }));
+      showNotification({ type: 'error', title: t('Csv.ImportFailed', { error: errorMessage(e) }) });
     }
   };
 
-  const downloadCsv = (type: 'Armor' | 'Weapons' | 'Ghost') => {
-    downloadCsvFiles(stores, itemInfos, type);
-    ga('send', 'event', 'Download CSV', type);
-  };
-
-  const downloadWeaponCsv = (e) => {
-    e.preventDefault();
-    downloadCsv('Weapons');
-    return false;
-  };
-
-  const downloadArmorCsv = (e) => {
-    e.preventDefault();
-    downloadCsv('Armor');
-    return false;
-  };
-
-  const downloadGhostCsv = (e) => {
-    e.preventDefault();
-    downloadCsv('Ghost');
-    return false;
-  };
+  const downloadCsv = (type: 'armor' | 'weapon' | 'ghost') => dispatch(downloadCsvFiles(type));
 
   return (
     <section id="spreadsheets">
+      {confirmDialog}
       <h2>{t('Settings.Data')}</h2>
-      <div className="setting horizontal">
+      <div className={settingClass}>
         <label htmlFor="spreadsheetLinks" title={t('Settings.ExportSSHelp')}>
           {t('Settings.ExportSS')}
         </label>
-        <div>
+        <div className={styles.buttons}>
           <button
             type="button"
             className="dim-button"
-            onClick={downloadWeaponCsv}
+            onClick={() => downloadCsv('weapon')}
             disabled={disabled}
           >
             <AppIcon icon={spreadsheetIcon} /> <span>{t('Bucket.Weapons')}</span>
@@ -86,7 +59,7 @@ function Spreadsheets({ stores, itemInfos, disabled, dispatch }: Props) {
           <button
             type="button"
             className="dim-button"
-            onClick={downloadArmorCsv}
+            onClick={() => downloadCsv('armor')}
             disabled={disabled}
           >
             <AppIcon icon={spreadsheetIcon} /> <span>{t('Bucket.Armor')}</span>
@@ -94,18 +67,35 @@ function Spreadsheets({ stores, itemInfos, disabled, dispatch }: Props) {
           <button
             type="button"
             className="dim-button"
-            onClick={downloadGhostCsv}
+            onClick={() => downloadCsv('ghost')}
             disabled={disabled}
           >
             <AppIcon icon={spreadsheetIcon} /> <span>{t('Bucket.Ghost')}</span>
           </button>
         </div>
+        <FileUpload
+          title={t('Settings.CsvImport')}
+          accept={{ 'text/csv': ['.csv'] }}
+          onDrop={importCsv}
+        />
       </div>
-      <div className="setting">
-        <FileUpload title={t('Settings.CsvImport')} accept=".csv" onDrop={importCsv} />
-      </div>
+      {d2Defs && (
+        <div className={settingClass}>
+          <label htmlFor="spreadsheetLinks" title={t('Settings.ExportLoadoutSSHelp')}>
+            {t('Settings.ExportLoadoutSS')}
+          </label>
+          <div>
+            <button
+              type="button"
+              className="dim-button"
+              onClick={() => dispatch(downloadLoadoutsCsv())}
+              disabled={disabled}
+            >
+              <AppIcon icon={spreadsheetIcon} /> <span>{t('Loadouts.Loadouts')}</span>
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(Spreadsheets);

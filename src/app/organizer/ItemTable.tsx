@@ -1,158 +1,143 @@
-/* eslint-disable react/jsx-key, react/prop-types */
-import React, { useMemo, useState, useRef, useCallback, useEffect, ReactNode } from 'react';
-import { DimItem } from 'app/inventory/item-types';
-import { AppIcon, faCaretUp, faCaretDown, spreadsheetIcon, uploadIcon } from 'app/shell/icons';
-import styles from './ItemTable.m.scss';
-import { ItemCategoryTreeNode } from './ItemTypeSelector';
-import _ from 'lodash';
-import { ItemInfos, TagInfo } from 'app/inventory/dim-item-info';
-import { DtrRating } from 'app/item-review/dtr-api-types';
-import { InventoryWishListRoll } from 'app/wishlists/wishlists';
-import { loadingTracker } from 'app/shell/loading-tracker';
-import { showNotification } from 'app/notifications/notifications';
-import { t, tl } from 'app/i18next-t';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import ItemActions from './ItemActions';
-import { DimStore } from 'app/inventory/store-types';
-import EnabledColumnsSelector from './EnabledColumnsSelector';
-import { bulkTagItems } from 'app/inventory/tag-items';
-import { connect } from 'react-redux';
-import { createSelector } from 'reselect';
-import { RootState, ThunkDispatchProp } from 'app/store/types';
-import { storesSelector, itemInfosSelector } from 'app/inventory/selectors';
-import { searchFilterSelector } from 'app/search/search-filter';
-import { inventoryWishListsSelector } from 'app/wishlists/reducer';
-import { toggleSearchQueryComponent } from 'app/shell/actions';
-import clsx from 'clsx';
-import { useShiftHeld } from 'app/utils/hooks';
-import { newLoadout, convertToLoadoutItem } from 'app/loadout/loadout-utils';
-import { applyLoadout } from 'app/loadout/loadout-apply';
-import { getColumns, getColumnSelectionId } from './Columns';
-import { ratingsSelector } from 'app/item-review/reducer';
-import { DestinyClass } from 'bungie-api-ts/destiny2';
-import { setItemLockState } from 'app/inventory/item-move-service';
-import { emptyObject, emptyArray } from 'app/utils/empty';
-import { Row, ColumnDefinition, SortDirection, ColumnSort } from './table-types';
-import { compareBy, chainComparator, reverseComparator } from 'app/utils/comparators';
-import { touch, setItemNote, touchItem } from 'app/inventory/actions';
-import { settingsSelector } from 'app/settings/reducer';
-import { setSetting } from 'app/settings/actions';
-import { StatHashListsKeyedByDestinyClass } from 'app/dim-ui/CustomStatTotal';
-import { Loadout } from 'app/loadout/loadout-types';
-import { loadoutsSelector } from 'app/loadout/reducer';
-import { StatInfo } from 'app/compare/Compare';
-import { downloadCsvFiles, importTagsNotesFromCsv } from 'app/inventory/spreadsheets';
-import Dropzone, { DropzoneOptions } from 'react-dropzone';
+import { destinyVersionSelector } from 'app/accounts/selectors';
+import { languageSelector, settingSelector } from 'app/dim-api/selectors';
 import UserGuideLink from 'app/dim-ui/UserGuideLink';
+import useBulkNote from 'app/dim-ui/useBulkNote';
+import useConfirm from 'app/dim-ui/useConfirm';
+import { t, tl } from 'app/i18next-t';
+import { bulkLockItems, bulkTagItems } from 'app/inventory/bulk-actions';
+import { DimItem, DimStat } from 'app/inventory/item-types';
+import {
+  allItemsSelector,
+  createItemContextSelector,
+  getNotesSelector,
+  getTagSelector,
+  storesSelector,
+} from 'app/inventory/selectors';
+import { downloadCsvFiles, importTagsNotesFromCsv } from 'app/inventory/spreadsheets';
+import { DimStore } from 'app/inventory/store-types';
+import {
+  applySocketOverrides,
+  useSocketOverridesForItems,
+} from 'app/inventory/store/override-sockets';
+import { applyLoadout } from 'app/loadout-drawer/loadout-apply';
+import { convertToLoadoutItem, newLoadout } from 'app/loadout-drawer/loadout-utils';
+import { loadoutsByItemSelector } from 'app/loadout/selectors';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { showNotification } from 'app/notifications/notifications';
+import { searchFilterSelector } from 'app/search/items/item-search-filter';
+import { setSettingAction } from 'app/settings/actions';
+import { toggleSearchQueryComponent } from 'app/shell/actions';
+import { AppIcon, faCaretDown, faCaretUp, spreadsheetIcon, uploadIcon } from 'app/shell/icons';
+import { loadingTracker } from 'app/shell/loading-tracker';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { Comparator, chainComparator, compareBy, reverseComparator } from 'app/utils/comparators';
+import { emptyArray } from 'app/utils/empty';
+import { useSetCSSVarToHeight, useShiftHeld } from 'app/utils/hooks';
+import { LookupTable } from 'app/utils/util-types';
+import { hasWishListSelector, wishListFunctionSelector } from 'app/wishlists/selectors';
+import { DestinyClass } from 'bungie-api-ts/destiny2';
+import clsx from 'clsx';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import React, { ReactNode, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Dropzone, { DropzoneOptions } from 'react-dropzone';
+import { useSelector } from 'react-redux';
+import { buildStatInfo, getColumnSelectionId, getColumns } from './Columns';
+import EnabledColumnsSelector from './EnabledColumnsSelector';
+import ItemActions, { TagCommandInfo } from './ItemActions';
 
-const categoryToClass = {
-  23: DestinyClass.Hunter,
-  22: DestinyClass.Titan,
-  21: DestinyClass.Warlock,
+import { compareSelectedItems } from 'app/compare/actions';
+
+import { useTableColumnSorts } from 'app/dim-ui/table-columns';
+import { compact, filterMap } from 'app/utils/collections';
+import { errorMessage } from 'app/utils/errors';
+
+import { DimLanguage } from 'app/i18n';
+import { localizedSorter } from 'app/utils/intl';
+
+import * as styles from './ItemTable.m.scss';
+import { ItemCategoryTreeNode, armorTopLevelCatHashes } from './ItemTypeSelector';
+import { ColumnDefinition, ColumnSort, Row, SortDirection, TableContext } from './table-types';
+
+const categoryToClass: LookupTable<ItemCategoryHashes, DestinyClass> = {
+  [ItemCategoryHashes.Hunter]: DestinyClass.Hunter,
+  [ItemCategoryHashes.Titan]: DestinyClass.Titan,
+  [ItemCategoryHashes.Warlock]: DestinyClass.Warlock,
 };
 
 const downloadButtonSettings = [
-  { categoryId: ['weapons'], csvType: 'Weapons' as const, label: tl('Bucket.Weapons') },
+  { categoryId: ['weapons'], csvType: 'weapon' as const, label: tl('Bucket.Weapons') },
   {
     categoryId: ['hunter', 'titan', 'warlock'],
-    csvType: 'Armor' as const,
+    csvType: 'armor' as const,
     label: tl('Bucket.Armor'),
   },
-  { categoryId: ['ghosts'], csvType: 'Ghost' as const, label: tl('Bucket.Ghost') },
+  { categoryId: ['ghosts'], csvType: 'ghost' as const, label: tl('Bucket.Ghost') },
 ];
 
-interface ProvidedProps {
-  categories: ItemCategoryTreeNode[];
-}
+export const MemoRow = memo(TableRow);
 
-interface StoreProps {
-  stores: DimStore[];
-  items: DimItem[];
-  defs: D2ManifestDefinitions;
-  itemInfos: ItemInfos;
-  ratings: { [key: string]: DtrRating };
-  wishList: {
-    [key: string]: InventoryWishListRoll;
-  };
-  isPhonePortrait: boolean;
-  enabledColumns: string[];
-  customTotalStatsByClass: StatHashListsKeyedByDestinyClass;
-  loadouts: Loadout[];
-  newItems: Set<string>;
-}
+const EXPAND_INCREMENT = 20;
 
-function mapStateToProps() {
-  const itemsSelector = createSelector(
-    storesSelector,
-    searchFilterSelector,
-    (_, props: ProvidedProps) => props.categories,
-    (stores, searchFilter, categories) => {
-      const terminal = Boolean(_.last(categories)?.terminal);
-      if (!terminal) {
-        return emptyArray<DimItem>();
-      }
-      const categoryHashes = categories.map((s) => s.itemCategoryHash).filter((h) => h > 0);
-      const items = stores.flatMap((s) =>
-        s.items.filter(
-          (i) =>
-            i.comparable &&
-            categoryHashes.every((h) => i.itemCategoryHashes.includes(h)) &&
-            searchFilter(i)
-        )
-      );
-      return items;
-    }
-  );
-
-  return (state: RootState, props: ProvidedProps): StoreProps => {
-    const items = itemsSelector(state, props);
-    const isWeapon = items[0]?.bucket.inWeapons;
-    const isArmor = items[0]?.bucket.inArmor;
-    const itemType = isWeapon ? 'weapon' : isArmor ? 'armor' : 'ghost';
-    return {
-      items,
-      defs: state.manifest.d2Manifest!,
-      stores: storesSelector(state),
-      itemInfos: itemInfosSelector(state),
-      ratings: $featureFlags.reviewsEnabled ? ratingsSelector(state) : emptyObject(),
-      wishList: inventoryWishListsSelector(state),
-      isPhonePortrait: state.shell.isPhonePortrait,
-      enabledColumns: settingsSelector(state)[columnSetting(itemType)],
-      customTotalStatsByClass: settingsSelector(state).customTotalStatsByClass,
-      loadouts: loadoutsSelector(state),
-      newItems: state.inventory.newItems,
-    };
-  };
-}
-
-type Props = ProvidedProps & StoreProps & ThunkDispatchProp;
-
-const MemoRow = React.memo(TableRow);
-
-function ItemTable({
-  items,
-  categories,
-  itemInfos,
-  ratings,
-  wishList,
-  defs,
-  stores,
-  enabledColumns,
-  customTotalStatsByClass,
-  loadouts,
-  newItems,
-  dispatch,
-}: Props) {
-  const [columnSorts, setColumnSorts] = useState<ColumnSort[]>([
+export default function ItemTable({ categories }: { categories: ItemCategoryTreeNode[] }) {
+  const [columnSorts, toggleColumnSort] = useTableColumnSorts([
     { columnId: 'name', sort: SortDirection.ASC },
   ]);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   // Track the last selection for shift-selecting
   const lastSelectedId = useRef<string | null>(null);
+  const [socketOverrides, onPlugClicked] = useSocketOverridesForItems();
+  const [maxItems, setMaxItems] = useState(EXPAND_INCREMENT);
+  useEffect(() => {
+    setMaxItems(EXPAND_INCREMENT);
+  }, [categories]);
+  const expandItems = useCallback(() => setMaxItems((m) => m + EXPAND_INCREMENT), []);
 
-  const classCategoryHash =
-    categories.map((n) => n.itemCategoryHash).find((hash) => hash in categoryToClass) ?? 999;
-  const classIfAny: DestinyClass = categoryToClass[classCategoryHash] ?? DestinyClass.Unknown;
+  const allItems = useSelector(allItemsSelector);
+  const searchFilter = useSelector(searchFilterSelector);
+  const originalItems = useMemo(() => {
+    const terminal = Boolean(categories.at(-1)?.terminal);
+    if (!terminal) {
+      return emptyArray<DimItem>();
+    }
+    const categoryHashes = categories.map((s) => s.itemCategoryHash).filter((h) => h !== 0);
+    // a top level class-specific category implies armor
+    if (armorTopLevelCatHashes.some((h) => categoryHashes.includes(h))) {
+      categoryHashes.push(ItemCategoryHashes.Armor);
+    }
+    const items = allItems.filter(
+      (i) =>
+        i.comparable &&
+        categoryHashes.every((h) => i.itemCategoryHashes.includes(h)) &&
+        searchFilter(i),
+    );
+    return items;
+  }, [allItems, categories, searchFilter]);
+
+  const firstCategory = categories[1];
+  const isWeapon = Boolean(firstCategory?.itemCategoryHash === ItemCategoryHashes.Weapon);
+  const isGhost = Boolean(firstCategory?.itemCategoryHash === ItemCategoryHashes.Ghost);
+  const isArmor = !isWeapon && !isGhost;
+  const itemType = isWeapon ? 'weapon' : isArmor ? 'armor' : 'ghost';
+
+  const stores = useSelector(storesSelector);
+  const getTag = useSelector(getTagSelector);
+  const getNotes = useSelector(getNotesSelector);
+  const wishList = useSelector(wishListFunctionSelector);
+  const hasWishList = useSelector(hasWishListSelector);
+  const enabledColumns = useSelector(settingSelector(columnSetting(itemType)));
+  const itemCreationContext = useSelector(createItemContextSelector);
+  const loadoutsByItem = useSelector(loadoutsByItemSelector);
+  const destinyVersion = useSelector(destinyVersionSelector);
+  const dispatch = useThunkDispatch();
+
+  const { customStats } = itemCreationContext;
+
+  const classCategoryHash = categories
+    .map((n) => n.itemCategoryHash)
+    .find((hash) => hash in categoryToClass);
+  const classIfAny: DestinyClass = classCategoryHash
+    ? (categoryToClass[classCategoryHash] ?? DestinyClass.Unknown)
+    : DestinyClass.Unknown;
 
   // Calculate the true height of the table header, for sticky-ness
   const tableRef = useRef<HTMLDivElement>(null);
@@ -167,236 +152,194 @@ function ItemTable({
         }
       }
 
-      document.querySelector('html')!.style.setProperty('--table-header-height', height + 1 + 'px');
+      document.querySelector('html')!.style.setProperty('--table-header-height', `${height + 1}px`);
     }
   });
 
-  // Build a list of all the stats relevant to this set of items
-  const statHashes = useMemo(
-    () => buildStatInfo(items, categories),
-    // We happen to know that we only need to recalculate this when the categories change
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [categories]
+  // Are we at a item category that can show items?
+  const terminal = Boolean(categories.at(-1)?.terminal);
+
+  const defs = useD2Definitions();
+  const items = useMemo(
+    () =>
+      defs
+        ? originalItems.map((item) =>
+            applySocketOverrides(itemCreationContext, item, socketOverrides[item.id]),
+          )
+        : originalItems,
+    [itemCreationContext, defs, originalItems, socketOverrides],
   );
 
-  const firstItem = items[0];
-  const isWeapon = Boolean(firstItem?.bucket.inWeapons);
-  const isArmor = Boolean(firstItem?.bucket.inArmor);
-  const itemType = isWeapon ? 'weapon' : isArmor ? 'armor' : 'ghost';
-  const customStatTotal = customTotalStatsByClass[classIfAny] ?? emptyArray();
-  const destinyVersion = firstItem?.destinyVersion || 2;
+  // Build a list of all the stats relevant to this set of items
+  const stats = useMemo(
+    () => (terminal ? buildStatInfo(items) : emptyArray<DimStat>()),
+    [terminal, items],
+  );
 
   const columns: ColumnDefinition[] = useMemo(
     () =>
       getColumns(
+        'organizer',
         itemType,
-        statHashes,
-        classIfAny,
-        defs,
-        itemInfos,
-        ratings,
+        stats,
+        getTag,
+        getNotes,
         wishList,
-        customStatTotal,
-        loadouts,
-        newItems,
-        destinyVersion
+        hasWishList,
+        customStats,
+        loadoutsByItem,
+        destinyVersion,
+        onPlugClicked,
       ),
     [
       wishList,
-      statHashes,
+      hasWishList,
+      stats,
       itemType,
-      itemInfos,
-      ratings,
-      defs,
-      customStatTotal,
-      classIfAny,
-      loadouts,
-      newItems,
+      getTag,
+      getNotes,
+      customStats,
+      loadoutsByItem,
       destinyVersion,
-    ]
+      onPlugClicked,
+    ],
   );
 
   // This needs work for sure
   const filteredColumns = useMemo(
     () =>
-      _.compact(
-        enabledColumns.flatMap((id) =>
-          columns.filter((column) => id === getColumnSelectionId(column))
-        )
+      compact(
+        columns.filter(
+          (column) =>
+            enabledColumns.includes(getColumnSelectionId(column)) &&
+            (column.limitToClass === undefined || column.limitToClass === classIfAny),
+        ),
       ),
-    [columns, enabledColumns]
+    [columns, enabledColumns, classIfAny],
   );
 
   // process items into Rows
-  const unsortedRows: Row[] = useMemo(() => buildRows(items, filteredColumns), [
-    filteredColumns,
-    items,
-  ]);
-  const rows = useMemo(() => sortRows(unsortedRows, columnSorts, filteredColumns), [
-    unsortedRows,
-    filteredColumns,
-    columnSorts,
-  ]);
+  const [unsortedRows, tableContext] = useMemo(
+    () => buildRows(items, filteredColumns),
+    [filteredColumns, items],
+  );
+  const language = useSelector(languageSelector);
+  const rows = useMemo(
+    () => sortRows(unsortedRows, columnSorts, filteredColumns, language),
+    [unsortedRows, filteredColumns, columnSorts, language],
+  );
 
   const shiftHeld = useShiftHeld();
 
   const onChangeEnabledColumn = useCallback(
     ({ checked, id }: { checked: boolean; id: string }) => {
       dispatch(
-        setSetting(
+        setSettingAction(
           columnSetting(itemType),
-          _.uniq(
-            _.compact(
-              columns.map((c) => {
+          Array.from(
+            new Set(
+              filterMap(columns, (c) => {
                 const cId = getColumnSelectionId(c);
                 if (cId === id) {
                   return checked ? cId : undefined;
                 } else {
                   return enabledColumns.includes(cId) ? cId : undefined;
                 }
-              })
-            )
-          )
-        )
+              }),
+            ),
+          ),
+        ),
       );
     },
-    [dispatch, columns, enabledColumns, itemType]
+    [dispatch, columns, enabledColumns, itemType],
   );
-  // TODO: stolen from SearchFilter, should probably refactor into a shared thing
+
+  const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
+
   const onLock = loadingTracker.trackPromise(async (lock: boolean) => {
-    const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
-
-    const state = lock;
-    try {
-      for (const item of selectedItems) {
-        await setItemLockState(item, state);
-
-        // TODO: Gotta do this differently in react land
-        item.locked = lock;
-        dispatch(touchItem(item.id));
-      }
-      showNotification({
-        type: 'success',
-        title: state
-          ? t('Filter.LockAllSuccess', { num: selectedItems.length })
-          : t('Filter.UnlockAllSuccess', { num: selectedItems.length }),
-      });
-    } catch (e) {
-      showNotification({
-        type: 'error',
-        title: state ? t('Filter.LockAllFailed') : t('Filter.UnlockAllFailed'),
-        body: e.message,
-      });
-    } finally {
-      // Touch the stores service to update state
-      if (selectedItems.length) {
-        dispatch(touch());
-      }
-    }
+    dispatch(bulkLockItems(selectedItems, lock));
   });
 
-  const onNote = (note?: string) => {
-    if (!note) {
-      note = undefined;
-    }
-    if (selectedItemIds.length) {
-      const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
-      for (const item of selectedItems) {
-        dispatch(setItemNote({ itemId: item.id, note }));
-      }
-    }
-  };
+  const [bulkNoteDialog, bulkNote] = useBulkNote();
+  const onNote = () => bulkNote(selectedItems);
 
   /**
+   * Handles Click Events for Table Rows
    * When shift-clicking a value, if there's a filter function defined, narrow/un-narrow the search
+   * When ctrl-clicking toggles selected value
    */
-  const narrowQueryFunction = useCallback(
+  const onRowClick = useCallback(
     (
       row: Row,
-      column: ColumnDefinition
-    ): React.MouseEventHandler<HTMLTableDataCellElement> | undefined =>
+      column: ColumnDefinition,
+    ): React.MouseEventHandler<HTMLTableCellElement> | undefined =>
       column.filter
         ? (e) => {
             if (e.shiftKey) {
-              if ((e.target as Element).hasAttribute('data-perk-name')) {
-                const filter = column.filter!(
-                  (e.target as Element).getAttribute('data-perk-name'),
-                  row.item
-                );
-                if (filter) {
-                  dispatch(toggleSearchQueryComponent(filter));
-                }
-                return;
-              }
-              const filter = column.filter!(row.values[column.id], row.item);
+              const node = e.target as HTMLElement;
+              const filter = column.filter!(
+                node.dataset.filterValue ??
+                  node.parentElement?.dataset.filterValue ?? // look for filter-value at most 1 element up
+                  row.values[column.id],
+                row.item,
+              );
               if (filter !== undefined) {
                 dispatch(toggleSearchQueryComponent(filter));
               }
             }
+
+            if (e.ctrlKey) {
+              setSelectedItemIds(
+                selectedItemIds.findIndex((selectedItemId) => selectedItemId === row.item.id) === -1
+                  ? [...selectedItemIds, row.item.id]
+                  : selectedItemIds.filter((id) => id !== row.item.id),
+              );
+            }
           }
         : undefined,
-    [dispatch]
+    [dispatch, selectedItemIds],
   );
 
-  const onMoveSelectedItems = (store: DimStore) => {
+  const onMoveSelectedItems = useCallback(
+    (store: DimStore) => {
+      if (selectedItems.length) {
+        const loadout = newLoadout(
+          t('Organizer.BulkMoveLoadoutName'),
+          selectedItems.map((i) => convertToLoadoutItem(i, false)),
+        );
+
+        dispatch(applyLoadout(store, loadout, { allowUndo: true }));
+      }
+    },
+    [dispatch, selectedItems],
+  );
+
+  const onTagSelectedItems = useCallback(
+    (tagInfo: TagCommandInfo) => {
+      if (tagInfo.type && selectedItemIds.length) {
+        const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
+        dispatch(bulkTagItems(selectedItems, tagInfo.type, true));
+      }
+    },
+    [dispatch, items, selectedItemIds],
+  );
+
+  const onCompareSelectedItems = useCallback(() => {
     if (selectedItemIds.length) {
       const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
-      const loadout = newLoadout(
-        t('Organizer.BulkMoveLoadoutName'),
-        selectedItems.map((i) => convertToLoadoutItem(i, false))
-      );
-
-      applyLoadout(store, loadout, true);
+      dispatch(compareSelectedItems(selectedItems));
     }
-  };
-
-  const onTagSelectedItems = (tagInfo: TagInfo) => {
-    if (tagInfo.type && selectedItemIds.length) {
-      const selectedItems = items.filter((i) => selectedItemIds.includes(i.id));
-      dispatch(bulkTagItems(selectedItems, tagInfo.type));
-    }
-  };
+  }, [dispatch, items, selectedItemIds]);
 
   const gridSpec = `min-content ${filteredColumns
     .map((c) => c.gridWidth ?? 'min-content')
     .join(' ')}`;
 
   /**
-   * Toggle sorting of columns. If shift is held, adds this column to the sort.
-   */
-  const toggleColumnSort = (column: ColumnDefinition) => () => {
-    setColumnSorts((sorts) => {
-      const newColumnSorts = shiftHeld
-        ? Array.from(sorts)
-        : sorts.filter((s) => s.columnId === column.id);
-      let found = false;
-      let index = 0;
-      for (const columnSort of newColumnSorts) {
-        if (columnSort.columnId === column.id) {
-          newColumnSorts[index] = {
-            ...columnSort,
-            sort: columnSort.sort === SortDirection.ASC ? SortDirection.DESC : SortDirection.ASC,
-          };
-          found = true;
-          break;
-        }
-        index++;
-      }
-      if (!found) {
-        newColumnSorts.push({
-          columnId: column.id,
-          sort: column.defaultSort || SortDirection.ASC,
-        });
-      }
-      return newColumnSorts;
-    });
-  };
-
-  /**
    * Select all items, or if any are selected, clear the selection.
    */
   const selectAllItems: React.ChangeEventHandler<HTMLInputElement> = () => {
-    if (selectedItemIds.length === 0) {
+    if (selectedItems.length === 0) {
       setSelectedItemIds(rows.map((r) => r.item.id));
     } else {
       setSelectedItemIds([]);
@@ -421,7 +364,7 @@ function ItemTable({
     }
 
     if (checked) {
-      setSelectedItemIds((selected) => _.uniq([...selected, ...changingIds]));
+      setSelectedItemIds((selected) => [...new Set([...selected, ...changingIds])]);
     } else {
       setSelectedItemIds((selected) => selected.filter((i) => !changingIds.includes(i)));
     }
@@ -429,19 +372,14 @@ function ItemTable({
     lastSelectedId.current = item.id;
   };
 
-  // TODO: drive the CSV export off the same column definitions as this table!
   let downloadAction: ReactNode | null = null;
   const downloadButtonSetting = downloadButtonSettings.find((setting) =>
-    setting.categoryId.includes(categories[1]?.id)
+    setting.categoryId.includes(categories[1]?.id),
   );
   if (downloadButtonSetting) {
-    const downloadCsv = (type: 'Armor' | 'Weapons' | 'Ghost') => {
-      downloadCsvFiles(stores, itemInfos, type);
-      ga('send', 'event', 'Download CSV', type);
-    };
-    const downloadHandler = (e) => {
+    const downloadHandler = (e: React.MouseEvent) => {
       e.preventDefault();
-      downloadCsv(downloadButtonSetting.csvType);
+      dispatch(downloadCsvFiles(downloadButtonSetting.csvType));
       return false;
     };
 
@@ -456,42 +394,49 @@ function ItemTable({
     );
   }
 
+  const [confirmDialog, confirm] = useConfirm();
   const importCsv: DropzoneOptions['onDrop'] = async (acceptedFiles) => {
     if (acceptedFiles.length < 1) {
-      alert(t('Csv.ImportWrongFileType'));
+      showNotification({ type: 'error', title: t('Csv.ImportWrongFileType') });
       return;
     }
 
-    if (!confirm(t('Csv.ImportConfirm'))) {
+    if (!(await confirm(t('Csv.ImportConfirm')))) {
       return;
     }
     try {
       const result = await dispatch(importTagsNotesFromCsv(acceptedFiles));
-      alert(t('Csv.ImportSuccess', { count: result }));
+      showNotification({ type: 'success', title: t('Csv.ImportSuccess', { count: result }) });
     } catch (e) {
-      alert(t('Csv.ImportFailed', { error: e.message }));
+      showNotification({ type: 'error', title: t('Csv.ImportFailed', { error: errorMessage(e) }) });
     }
   };
 
+  const toolbarRef = useRef(null);
+  useSetCSSVarToHeight(toolbarRef, '--item-table-toolbar-height');
+
   return (
-    <div
-      className={clsx(styles.table, 'show-new-items', shiftHeld && styles.shiftHeld)}
-      style={{ gridTemplateColumns: gridSpec }}
-      role="table"
-      ref={tableRef}
-    >
-      <div className={styles.toolbar}>
-        <div>
+    <>
+      <div
+        className={clsx(styles.table, shiftHeld && styles.shiftHeld)}
+        style={{ gridTemplateColumns: gridSpec }}
+        role="table"
+        ref={tableRef}
+      >
+        {confirmDialog}
+        {bulkNoteDialog}
+        <div className={styles.toolbar} ref={toolbarRef}>
           <ItemActions
-            itemsAreSelected={Boolean(selectedItemIds.length)}
+            itemsAreSelected={Boolean(selectedItems.length)}
             onLock={onLock}
             onNote={onNote}
             stores={stores}
             onTagSelectedItems={onTagSelectedItems}
             onMoveSelectedItems={onMoveSelectedItems}
+            onCompareSelectedItems={onCompareSelectedItems}
           />
-          <UserGuideLink topic="Organizer" className={styles.guideLink} />
-          <Dropzone onDrop={importCsv} accept=".csv">
+          <UserGuideLink topic="Organizer" />
+          <Dropzone onDrop={importCsv} accept={{ 'text/csv': ['.csv'] }} useFsAccessApi={false}>
             {({ getRootProps, getInputProps }) => (
               <div {...getRootProps()} className={styles.importButton}>
                 <input {...getInputProps()} />
@@ -509,178 +454,191 @@ function ItemTable({
             forClass={classIfAny}
           />
         </div>
-      </div>
-      <div className={clsx(styles.selection, styles.header)} role="columnheader" aria-sort="none">
-        <input
-          name="selectAll"
-          title={t('Organizer.SelectAll')}
-          type="checkbox"
-          checked={selectedItemIds.length === rows.length}
-          ref={(el) =>
-            el &&
-            (el.indeterminate =
-              selectedItemIds.length !== rows.length && selectedItemIds.length > 0)
-          }
-          onChange={selectAllItems}
-        />
-      </div>
-      {filteredColumns.map((column: ColumnDefinition) => (
-        <div
-          key={column.id}
-          className={clsx(styles[column.id], styles.header)}
-          role="columnheader"
-          aria-sort="none"
-        >
-          <div onClick={column.noSort ? undefined : toggleColumnSort(column)}>
-            {column.header}
-            {!column.noSort && columnSorts.some((c) => c.columnId === column.id) && (
-              <AppIcon
-                className={styles.sorter}
-                icon={
-                  columnSorts.find((c) => c.columnId === column.id)!.sort === SortDirection.DESC
-                    ? faCaretUp
-                    : faCaretDown
-                }
+        <div className={styles.headerRow} role="row">
+          <div
+            className={clsx(styles.selection, styles.header)}
+            role="columnheader"
+            aria-sort="none"
+          >
+            <div>
+              <input
+                name="selectAll"
+                title={t('Organizer.SelectAll')}
+                type="checkbox"
+                checked={selectedItems.length === rows.length}
+                ref={(el) => {
+                  el &&
+                    (el.indeterminate =
+                      selectedItems.length !== rows.length && selectedItems.length > 0);
+                }}
+                onChange={selectAllItems}
               />
-            )}
+            </div>
           </div>
+          {filteredColumns.map((column) => {
+            const columnSort = column.noSort
+              ? undefined
+              : columnSorts.find((c) => c.columnId === column.id);
+            return (
+              <div
+                key={column.id}
+                className={clsx(column.headerClassName, styles.header)}
+                role="columnheader"
+                aria-sort={
+                  columnSort === undefined
+                    ? 'none'
+                    : columnSort.sort === SortDirection.DESC
+                      ? 'descending'
+                      : 'ascending'
+                }
+              >
+                <div
+                  onClick={
+                    column.noSort
+                      ? undefined
+                      : toggleColumnSort(column.id, shiftHeld, column.defaultSort)
+                  }
+                >
+                  {column.header}
+                  {columnSort && (
+                    <AppIcon
+                      className={styles.sorter}
+                      icon={columnSort.sort === SortDirection.DESC ? faCaretDown : faCaretUp}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ))}
-      {rows.length === 0 && <div className={styles.noItems}>{t('Organizer.NoItems')}</div>}
-      {rows.map((row) => (
-        <React.Fragment key={row.item.id}>
-          <div className={styles.selection} role="cell">
-            <input
-              type="checkbox"
-              title={t('Organizer.SelectItem', { name: row.item.name })}
-              checked={selectedItemIds.includes(row.item.id)}
-              onChange={(e) => selectItem(e, row.item)}
+        {rows.length === 0 && <div className={styles.noItems}>{t('Organizer.NoItems')}</div>}
+        {rows.slice(0, maxItems).map((row) => (
+          <div key={row.item.id} className={styles.row} role="row">
+            <div className={styles.selection} role="cell">
+              <input
+                type="checkbox"
+                title={t('Organizer.SelectItem', { name: row.item.name })}
+                checked={selectedItemIds.includes(row.item.id)}
+                onChange={(e) => selectItem(e, row.item)}
+              />
+            </div>
+            <MemoRow
+              row={row}
+              filteredColumns={filteredColumns}
+              onRowClick={onRowClick}
+              tableCtx={tableContext}
             />
           </div>
-          <MemoRow
-            row={row}
-            filteredColumns={filteredColumns}
-            narrowQueryFunction={narrowQueryFunction}
-          />
-        </React.Fragment>
-      ))}
-    </div>
+        ))}
+      </div>
+      {rows.length > maxItems && <ItemListExpander numItems={maxItems} onExpand={expandItems} />}
+    </>
   );
 }
 
 /**
  * Build a list of rows with materialized values.
  */
-function buildRows(items: DimItem[], filteredColumns: ColumnDefinition[]) {
+export function buildRows(items: DimItem[], filteredColumns: ColumnDefinition[]) {
   const unsortedRows: Row[] = items.map((item) => ({
     item,
-    values: filteredColumns.reduce((memo, col) => {
+    values: filteredColumns.reduce<Row['values']>((memo, col) => {
       memo[col.id] = col.value(item);
       return memo;
     }, {}),
   }));
-  return unsortedRows;
+
+  // Build a map of min/max values for each column
+  // TODO: Use these to color stats in the ItemTable view
+  const ctx: TableContext = { minMaxValues: {} };
+  for (const column of filteredColumns) {
+    if (column.cell) {
+      for (const row of unsortedRows) {
+        const value = row.values[column.id];
+        if (typeof value === 'number') {
+          const minMax = (ctx.minMaxValues[column.id] ??= { min: value, max: value });
+          minMax.min = Math.min(minMax.min, value);
+          minMax.max = Math.max(minMax.max, value);
+        }
+      }
+    }
+  }
+
+  return [unsortedRows, ctx] as const;
 }
 
 /**
  * Sort the rows based on the selected columns.
  */
-function sortRows(
+export function sortRows(
   unsortedRows: Row[],
   columnSorts: ColumnSort[],
-  filteredColumns: ColumnDefinition[]
+  filteredColumns: ColumnDefinition[],
+  language: DimLanguage,
+  defaultComparator?: Comparator<Row>,
 ) {
+  if (!columnSorts.length && defaultComparator) {
+    return unsortedRows.toSorted(defaultComparator);
+  }
+
   const comparator = chainComparator<Row>(
     ...columnSorts.map((sorter) => {
       const column = filteredColumns.find((c) => c.id === sorter.columnId);
       if (column) {
-        const compare = column.sort
-          ? (row1: Row, row2: Row) => column.sort!(row1.values[column.id], row2.values[column.id])
-          : compareBy((row: Row) => row.values[column.id]);
-        return sorter.sort === SortDirection.ASC ? compare : reverseComparator(compare);
+        const sort = column.sort;
+        const compare: Comparator<Row> = sort
+          ? (row1, row2) =>
+              sort(row1.values[column.id], row2.values[column.id], row1.item, row2.item)
+          : unsortedRows.some((row) => typeof row.values[column.id] === 'string')
+            ? localizedSorter(language, (row) => (row.values[column.id] ?? '') as string)
+            : compareBy((row) => row.values[column.id] ?? 0);
+        // Always sort undefined values to the end
+        return chainComparator(
+          compareBy((row) => row.values[column.id] === undefined),
+          sorter.sort === SortDirection.ASC ? compare : reverseComparator(compare),
+        );
       }
       return compareBy(() => 0);
-    })
+    }),
   );
 
-  return Array.from(unsortedRows).sort(comparator);
-}
-
-/**
- * This builds stat infos for all the stats that are relevant to a particular category of items.
- * It will return the same result for the same category, since all items in a category share stats.
- */
-function buildStatInfo(
-  items: DimItem[],
-  categories: ItemCategoryTreeNode[]
-): {
-  [statHash: number]: StatInfo;
-} {
-  const terminal = Boolean(_.last(categories)?.terminal);
-  if (!terminal) {
-    return emptyObject();
-  }
-  const statHashes: {
-    [statHash: number]: StatInfo;
-  } = {};
-  for (const item of items) {
-    if (item.stats) {
-      for (const stat of item.stats) {
-        if (statHashes[stat.statHash]) {
-          // TODO: we don't yet use the min and max values
-          statHashes[stat.statHash].max = Math.max(statHashes[stat.statHash].max, stat.value);
-          statHashes[stat.statHash].min = Math.min(statHashes[stat.statHash].min, stat.value);
-        } else {
-          statHashes[stat.statHash] = {
-            id: stat.statHash,
-            displayProperties: stat.displayProperties,
-            min: stat.value,
-            max: stat.value,
-            enabled: true,
-            lowerBetter: stat.smallerIsBetter,
-            getStat(item) {
-              return item.stats ? item.stats.find((s) => s.statHash === stat.statHash) : undefined;
-            },
-          };
-        }
-      }
-    }
-  }
-  return statHashes;
+  return unsortedRows.toSorted(comparator);
 }
 
 function TableRow({
   row,
   filteredColumns,
-  narrowQueryFunction,
+  onRowClick,
+  tableCtx,
 }: {
   row: Row;
   filteredColumns: ColumnDefinition[];
-  narrowQueryFunction(
+  tableCtx: TableContext;
+  onRowClick: (
     row: Row,
-    column: ColumnDefinition
-  ): ((event: React.MouseEvent<HTMLTableDataCellElement, MouseEvent>) => void) | undefined;
+    column: ColumnDefinition,
+  ) => ((event: React.MouseEvent<HTMLTableCellElement>) => void) | undefined;
 }) {
   return (
     <>
-      {filteredColumns.map((column: ColumnDefinition) => (
+      {filteredColumns.map((column) => (
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
         <div
           key={column.id}
-          onClick={narrowQueryFunction(row, column)}
-          className={clsx(styles[column.id], {
-            [styles.hasFilter]: column.filter,
+          onClick={onRowClick(row, column)}
+          className={clsx(column.className, {
+            [styles.hasFilter]: column.filter !== undefined,
           })}
           role="cell"
         >
-          {column.cell ? column.cell(row.values[column.id], row.item) : row.values[column.id]}
+          {column.cell
+            ? column.cell(row.values[column.id], row.item, tableCtx.minMaxValues[column.id])
+            : row.values[column.id]}
         </div>
       ))}
     </>
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(ItemTable);
 
 function columnSetting(itemType: 'weapon' | 'armor' | 'ghost') {
   switch (itemType) {
@@ -691,4 +649,45 @@ function columnSetting(itemType: 'weapon' | 'armor' | 'ghost') {
     case 'ghost':
       return 'organizerColumnsGhost';
   }
+}
+
+function ItemListExpander({ onExpand, numItems }: { onExpand: () => void; numItems: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const elem = ref.current;
+    if (!elem) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            onExpand();
+          }
+        }
+      },
+      {
+        root: null,
+        rootMargin: '16px',
+        threshold: 0,
+      },
+    );
+
+    observer.observe(elem);
+
+    return () => observer.unobserve(elem);
+  }, [
+    onExpand,
+    // This is a hack to fix the case where:
+    // 1. The expander is on screen when the component renders.
+    // 2. After adding more items, it's still on screen. Since the observer only
+    //    runs if the item is initially onscreen, or enters the screen, there
+    //    are no changes. So we'll just reconstruct the observer every time to
+    //    allow it to re-fire if it's still on the screen.
+    numItems,
+  ]);
+
+  return <div ref={ref} />;
 }

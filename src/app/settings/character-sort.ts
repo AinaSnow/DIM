@@ -1,69 +1,61 @@
+import { CharacterOrder } from '@destinyitemmanager/dim-api-types';
+import { settingsSelector } from 'app/dim-api/selectors';
 import { RootState } from 'app/store/types';
-import { DimStore } from '../inventory/store-types';
-import _ from 'lodash';
-import { DestinyCharacterComponent } from 'bungie-api-ts/destiny2';
+import { compareBy, compareByIndex, reverseComparator } from 'app/utils/comparators';
 import { createSelector } from 'reselect';
-import { settingsSelector } from './reducer';
+import { DimStore } from '../inventory/store-types';
 
 export const characterOrderSelector = (state: RootState) => settingsSelector(state).characterOrder;
 const customCharacterSortSelector = (state: RootState) =>
   settingsSelector(state).customCharacterSort;
 
-export const characterSortSelector = createSelector(
-  characterOrderSelector,
-  customCharacterSortSelector,
-  (order, customCharacterSort) => {
-    switch (order) {
-      case 'mostRecent':
-        return (stores: DimStore[]) => _.sortBy(stores, (store) => store.lastPlayed).reverse();
+function sortCharacters(
+  order: CharacterOrder,
+  customCharacterSort: string[],
+): (stores: readonly DimStore[]) => DimStore[] {
+  switch (order) {
+    case 'mostRecent':
+      return (stores) =>
+        stores.toSorted(reverseComparator(compareBy((store) => store.lastPlayed.getTime())));
 
-      case 'mostRecentReverse':
-        return (stores: DimStore[]) =>
-          _.sortBy(stores, (store) => {
+    case 'mostRecentReverse':
+      return (stores) =>
+        stores.toSorted(
+          compareBy((store) => {
             if (store.isVault) {
               return Infinity;
             } else {
-              return store.lastPlayed;
+              return store.lastPlayed.getTime();
             }
-          });
+          }),
+        );
 
-      case 'custom': {
-        const customSortOrder = customCharacterSort;
-        return (stores: DimStore[]) =>
-          _.sortBy(stores, (s) => (s.isVault ? 999 : customSortOrder.indexOf(s.id)));
-      }
-
-      default:
-      case 'fixed': // "Age"
-        // https://github.com/Bungie-net/api/issues/614
-        return (stores: DimStore[]) => _.sortBy(stores, (s) => s.id);
+    case 'custom': {
+      const customSortOrder = customCharacterSort;
+      return (stores) => stores.toSorted(compareByIndex(customSortOrder, (s) => s.id));
     }
-  }
-);
 
-export const characterComponentSortSelector = createSelector(
+    default:
+    case 'fixed': // "Age"
+      // https://github.com/Bungie-net/api/issues/614
+      return (stores) => stores.toSorted(compareBy((s) => s.id));
+  }
+}
+
+export const characterSortSelector = createSelector(
   characterOrderSelector,
   customCharacterSortSelector,
-  (order, customCharacterSort) => {
-    switch (order) {
-      case 'mostRecent':
-        return (stores: DestinyCharacterComponent[]) =>
-          _.sortBy(stores, (store) => new Date(store.dateLastPlayed)).reverse();
+  sortCharacters,
+);
 
-      case 'mostRecentReverse':
-        return (stores: DestinyCharacterComponent[]) =>
-          _.sortBy(stores, (store) => new Date(store.dateLastPlayed));
-
-      case 'custom': {
-        const customSortOrder = customCharacterSort;
-        return (stores: DestinyCharacterComponent[]) =>
-          _.sortBy(stores, (s) => customSortOrder.indexOf(s.characterId));
-      }
-
-      default:
-      case 'fixed': // "Age"
-        // https://github.com/Bungie-net/api/issues/614
-        return (stores: DestinyCharacterComponent[]) => _.sortBy(stores, (s) => s.characterId);
-    }
-  }
+/**
+ * This sorts stores by "importance" rather than how they display as columns. This is for
+ * dropdowns and such where "mostRecentReverse" still implies that the most recent character
+ * is most important.
+ */
+export const characterSortImportanceSelector = createSelector(
+  characterOrderSelector,
+  customCharacterSortSelector,
+  (order, customCharacterSort) =>
+    sortCharacters(order === 'mostRecentReverse' ? 'mostRecent' : order, customCharacterSort),
 );

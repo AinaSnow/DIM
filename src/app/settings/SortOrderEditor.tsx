@@ -1,27 +1,33 @@
-import React from 'react';
-import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
+import { t } from 'app/i18next-t';
+import { reorder } from 'app/utils/collections';
 import clsx from 'clsx';
-import './SortOrderEditor.scss';
+import { clamp } from 'es-toolkit';
+import { Reorder, useDragControls } from 'motion/react';
+import { useState } from 'react';
 import {
-  reorderIcon,
   AppIcon,
-  enabledIcon,
-  moveUpIcon,
+  dragHandleIcon,
+  faCheckSquare,
+  faSquare,
+  maximizeIcon,
+  minimizeIcon,
   moveDownIcon,
-  unselectedCheckIcon,
+  moveUpIcon,
 } from '../shell/icons';
+import * as styles from './SortOrderEditor.m.scss';
 
 export interface SortProperty {
   readonly id: string;
   readonly displayName: string;
   readonly enabled: boolean;
-  // TODO, should we support up/down?
+  readonly reversed: boolean;
 }
 
-interface Props {
-  order: SortProperty[];
-  onSortOrderChanged(order: SortProperty[]): void;
-}
+type OnCommandHandler = (
+  e: React.MouseEvent,
+  index: number,
+  command: 'up' | 'down' | 'toggle' | 'direction-toggle',
+) => void;
 
 /**
  * An editor for sort-orders, with drag and drop.
@@ -29,128 +35,169 @@ interface Props {
  * This is a "controlled component" - it fires an event when the order changes, and
  * must then be given back the new order by its parent.
  */
-export default class SortOrderEditor extends React.Component<Props> {
-  onDragEnd = (result: DropResult) => {
-    // dropped outside the list
-    if (!result.destination) {
-      return;
-    }
+export default function SortOrderEditor({
+  order,
+  onSortOrderChanged,
+}: {
+  order: SortProperty[];
+  onSortOrderChanged: (order: SortProperty[]) => void;
+}) {
+  // Local state for dragging - use the prop order as initial value
+  const [draggingOrder, setDraggingOrder] = useState<SortProperty[] | undefined>();
 
-    this.moveItem(result.source.index, result.destination.index, true);
-  };
-
-  onClick = (e) => {
-    const target: HTMLElement = e.target;
-    const getIndex = () => parseInt(target.parentElement!.dataset.index!, 10);
-
-    if (target.classList.contains('sort-up')) {
-      e.preventDefault();
-      const index = getIndex();
-      this.moveItem(index, index - 1);
-    } else if (target.classList.contains('sort-down')) {
-      e.preventDefault();
-      const index = getIndex();
-      this.moveItem(index, index + 1);
-    } else if (target.classList.contains('sort-toggle')) {
-      e.preventDefault();
-      const index = getIndex();
-      this.toggleItem(index);
-    }
-  };
-
-  render() {
-    const { order } = this.props;
-    return (
-      <DragDropContext onDragEnd={this.onDragEnd}>
-        <Droppable droppableId="droppable">
-          {(provided) => (
-            <div
-              className="sort-order-editor"
-              ref={provided.innerRef}
-              onClick={this.onClick}
-              {...provided.droppableProps}
-            >
-              <SortEditorItemList order={order} />
-              {provided.placeholder}
-            </div>
-          )}
-        </Droppable>
-      </DragDropContext>
-    );
-  }
-
-  private moveItem(oldIndex, newIndex, fromDrag = false) {
-    newIndex = Math.min(this.props.order.length, Math.max(newIndex, 0));
-    const order = reorder(this.props.order, oldIndex, newIndex);
+  const moveItem = (oldIndex: number, newIndex: number, fromDrag = false) => {
+    newIndex = clamp(newIndex, 0, order.length);
+    const newOrder = reorder(order, oldIndex, newIndex);
     if (fromDrag) {
-      order[newIndex] = {
-        ...order[newIndex],
-        enabled: newIndex === 0 || order[newIndex - 1].enabled,
+      newOrder[newIndex] = {
+        ...newOrder[newIndex],
+        enabled: newIndex === 0 || newOrder[newIndex - 1].enabled,
       };
     }
-    this.fireOrderChanged(order);
-  }
+    onSortOrderChanged(newOrder);
+  };
 
-  private toggleItem(index) {
-    const order = Array.from(this.props.order);
-    order[index] = { ...order[index], enabled: !order[index].enabled };
-    this.fireOrderChanged(order);
-  }
+  const handleReorder = (newOrder: SortProperty[]) => {
+    // During dragging, just update local state without applying business logic
+    setDraggingOrder(newOrder);
+  };
 
-  private fireOrderChanged(order: SortProperty[]) {
-    this.props.onSortOrderChanged(order);
-  }
-}
+  const handleDragEnd = (item: SortProperty) => {
+    if (!draggingOrder) {
+      return; // No dragging in progress
+    }
+    // When drag ends, apply the enabling logic and notify parent
+    const oldIndex = order.findIndex((i) => i.id === item.id);
+    const newIndex = draggingOrder.findIndex((i) => i.id === item.id);
+    moveItem(oldIndex, newIndex, true);
+    setDraggingOrder(undefined); // Reset local state after drag ends
+  };
 
-// a little function to help us with reordering the result
-function reorder<T>(list: T[], startIndex: number, endIndex: number): T[] {
-  const result = Array.from(list);
-  const [removed] = result.splice(startIndex, 1);
-  result.splice(endIndex, 0, removed);
+  const toggleItem = (index: number, prop: 'enabled' | 'reversed') => {
+    const orderArr = Array.from(order);
+    orderArr[index] = { ...orderArr[index], [prop]: !orderArr[index][prop] };
+    onSortOrderChanged(orderArr);
+  };
 
-  return result;
-}
+  const onCommand: OnCommandHandler = (e, index, command) => {
+    switch (command) {
+      case 'up': {
+        e.preventDefault();
+        moveItem(index, index - 1);
+        break;
+      }
+      case 'down': {
+        e.preventDefault();
+        moveItem(index, index + 1);
+        break;
+      }
+      case 'toggle': {
+        e.preventDefault();
+        toggleItem(index, 'enabled');
+        break;
+      }
+      case 'direction-toggle': {
+        e.preventDefault();
+        toggleItem(index, 'reversed');
+        break;
+      }
+      default:
+        break;
+    }
+  };
 
-const SortEditorItemList = React.memo(({ order }: { order: SortProperty[] }) => (
-  <>
-    {order.map((item, index) => (
-      <SortEditorItem key={item.id} item={item} index={index} />
-    ))}
-  </>
-));
-
-function SortEditorItem(props: { index: number; item: SortProperty }) {
-  const { index, item } = props;
+  // While dragging, use local state, but when we drop we'll go back to the
+  // order from the prop.
+  const currentOrder = draggingOrder ?? order;
 
   return (
-    <Draggable draggableId={item.id} index={index}>
-      {(provided, snapshot) => (
-        <div
-          className={clsx('sort-order-editor-item', {
-            'is-dragging': snapshot.isDragging,
-            disabled: !item.enabled,
-          })}
-          data-index={index}
-          ref={provided.innerRef}
-          {...provided.draggableProps}
-        >
-          <span {...provided.dragHandleProps}>
-            <AppIcon icon={reorderIcon} className="reorder-handle" />
-          </span>
-          <span className="name" {...provided.dragHandleProps}>
-            {item.displayName}
-          </span>
-          <span className="sort-button sort-up">
-            <AppIcon icon={moveUpIcon} />
-          </span>
-          <span className="sort-button sort-down">
-            <AppIcon icon={moveDownIcon} />
-          </span>
-          <span className="sort-button sort-toggle">
-            <AppIcon icon={item.enabled ? enabledIcon : unselectedCheckIcon} />
-          </span>
-        </div>
-      )}
-    </Draggable>
+    <Reorder.Group
+      axis="y"
+      values={currentOrder}
+      onReorder={handleReorder}
+      className={styles.editor}
+      as="div"
+    >
+      {currentOrder.map((item, index) => (
+        <SortEditorItem
+          key={item.id}
+          item={item}
+          index={index}
+          onCommand={onCommand}
+          onDragEnd={handleDragEnd}
+        />
+      ))}
+    </Reorder.Group>
+  );
+}
+
+function SortEditorItem({
+  index,
+  item,
+  onCommand,
+  onDragEnd,
+}: {
+  index: number;
+  item: SortProperty;
+  onCommand: OnCommandHandler;
+  onDragEnd: (item: SortProperty) => void;
+}) {
+  const className = clsx(styles.item, {
+    [styles.disabled]: !item.enabled,
+  });
+  // We use our own controls to avoid having the entire element be draggable.
+  // Requires dragListener={false} on Reorder.Item.
+  const controls = useDragControls();
+  // Assign this to onPointerDown to start dragging from this item
+  const startDrag = (e: React.PointerEvent) => controls.start(e);
+
+  return (
+    <Reorder.Item
+      value={item}
+      className={className}
+      dragListener={false}
+      dragControls={controls}
+      whileDrag={{
+        // I guess we can only do inline styles here
+        outline: '1px solid var(--theme-accent-primary)',
+      }}
+      onDragEnd={() => onDragEnd(item)}
+      as="div"
+    >
+      <span tabIndex={-1} onPointerDown={startDrag}>
+        <AppIcon icon={dragHandleIcon} className={styles.grip} />
+      </span>
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={item.enabled}
+        className={styles.button}
+        onClick={(e) => onCommand(e, index, 'toggle')}
+      >
+        <AppIcon icon={item.enabled ? faCheckSquare : faSquare} />
+      </button>
+      <span className={styles.name} onPointerDown={startDrag}>
+        {item.displayName}
+      </span>
+      <button type="button" className={styles.button} onClick={(e) => onCommand(e, index, 'up')}>
+        <AppIcon icon={moveUpIcon} />
+      </button>
+      <button type="button" className={styles.button} onClick={(e) => onCommand(e, index, 'down')}>
+        <AppIcon icon={moveDownIcon} />
+      </button>
+      <button
+        type="button"
+        title={t('Settings.ReverseSort')}
+        className={styles.button}
+        onClick={(e) => onCommand(e, index, 'direction-toggle')}
+      >
+        <AppIcon
+          icon={item.reversed ? maximizeIcon : minimizeIcon}
+          className={
+            item.enabled ? (item.reversed ? styles.sortReverse : styles.sortForward) : undefined
+          }
+        />
+      </button>
+    </Reorder.Item>
   );
 }

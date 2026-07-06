@@ -1,124 +1,57 @@
-import React, { Suspense, useEffect, useState } from 'react';
-import Header from './shell/Header';
-import clsx from 'clsx';
-import ActivityTracker from './dim-ui/ActivityTracker';
-import { connect } from 'react-redux';
+import { settingSelector } from 'app/dim-api/selectors';
 import { RootState } from 'app/store/types';
-import ClickOutsideRoot from './dim-ui/ClickOutsideRoot';
-import HotkeysCheatSheet from './hotkeys/HotkeysCheatSheet';
-import NotificationsContainer from './notifications/NotificationsContainer';
-import styles from './App.m.scss';
-import { settingsSelector } from './settings/reducer';
-import { Switch, Route, Redirect } from 'react-router';
-import DefaultAccount from './shell/DefaultAccount';
-import { DestinyVersion } from '@destinyitemmanager/dim-api-types';
-import Login from './login/Login';
-import ScrollToTop from './shell/ScrollToTop';
-import GATracker from './shell/GATracker';
-import SneakyUpdates from './shell/SneakyUpdates';
-import About from './shell/About';
-import Destiny from './shell/Destiny';
-import Privacy from './shell/Privacy';
+import { lazyWithRetry as lazy } from 'app/utils/chunk-load';
+import clsx from 'clsx';
+import { Suspense } from 'react';
+import { useSelector } from 'react-redux';
+import { Navigate, Route, Routes, useLocation } from 'react-router';
+import * as styles from './App.m.scss';
 import Developer from './developer/Developer';
+import AutoRefresh from './dim-ui/AutoRefresh';
+import ClickOutsideRoot from './dim-ui/ClickOutsideRoot';
 import ErrorBoundary from './dim-ui/ErrorBoundary';
 import PageLoading from './dim-ui/PageLoading';
 import ShowPageLoading from './dim-ui/ShowPageLoading';
+import HotkeysCheatSheet from './hotkeys/HotkeysCheatSheet';
 import { t } from './i18next-t';
-import { IssueBanner } from './banner/IssueBanner';
-import { set } from 'idb-keyval';
-import ErrorPanel from './shell/ErrorPanel';
+import Login from './login/Login';
+import NotificationsContainer from './notifications/NotificationsContainer';
+import DefaultAccount from './shell/DefaultAccount';
+import Destiny from './shell/Destiny';
+import GATracker from './shell/GATracker';
+import Header from './shell/Header';
+import ScrollToTop from './shell/ScrollToTop';
+import SneakyUpdates from './shell/SneakyUpdates';
 
-const WhatsNew = React.lazy(() =>
-  import(/* webpackChunkName: "whatsNew" */ './whats-new/WhatsNew')
+const WhatsNew = lazy(
+  () => import(/* webpackChunkName: "about-whatsnew-privacy-debug" */ './whats-new/WhatsNew'),
+);
+const SettingsPage = lazy(
+  () => import(/* webpackChunkName: "settings" */ './settings/SettingsPage'),
+);
+const Debug = lazy(
+  () => import(/* webpackChunkName: "about-whatsnew-privacy-debug" */ './debug/Debug'),
+);
+const Privacy = lazy(
+  () => import(/* webpackChunkName: "about-whatsnew-privacy-debug" */ './shell/Privacy'),
+);
+const About = lazy(
+  () => import(/* webpackChunkName: "about-whatsnew-privacy-debug" */ './shell/About'),
 );
 
-// These three are all from the same chunk
-const SettingsPage = React.lazy(async () => ({
-  default: (await import(/* webpackChunkName: "settings" */ './settings/components')).SettingsPage,
-}));
-const AuditLog = React.lazy(async () => ({
-  default: (await import(/* webpackChunkName: "settings" */ './settings/components')).AuditLog,
-}));
-
-interface StoreProps {
-  language: string;
-  showReviews: boolean;
-  itemQuality: boolean;
-  showNewItems: boolean;
-  charColMobile: number;
-  needsLogin: boolean;
-  reauth: boolean;
-  needsDeveloper: boolean;
-  showIssueBanner: boolean;
-}
-
-function mapStateToProps(state: RootState): StoreProps {
-  const settings = settingsSelector(state);
-  return {
-    language: settings.language,
-    showReviews: settings.showReviews,
-    itemQuality: settings.itemQuality,
-    showNewItems: settings.showNewItems,
-    charColMobile: settings.charColMobile,
-    needsLogin: state.accounts.needsLogin,
-    reauth: state.accounts.reauth,
-    needsDeveloper: state.accounts.needsDeveloper,
-    showIssueBanner: $featureFlags.issueBanner && state.dimApi.globalSettings.showIssueBanner,
-  };
-}
-
-type Props = StoreProps;
-
-const mobile = /iPad|iPhone|iPod|Android/.test(navigator.userAgent);
-
-function App({
-  language,
-  charColMobile,
-  showReviews,
-  itemQuality,
-  showNewItems,
-  needsLogin,
-  reauth,
-  needsDeveloper,
-  showIssueBanner,
-}: Props) {
-  const [storageWorks, setStorageWorks] = useState(true);
-  useEffect(() => {
-    (async () => {
-      try {
-        localStorage.setItem('test', 'true');
-        if (!window.indexedDB) {
-          throw new Error('IndexedDB not available');
-        }
-        await set('idb-test', true);
-      } catch (e) {
-        console.error('Failed Storage Test', e);
-        setStorageWorks(false);
-      }
-    })();
-  }, []);
-
-  if (!storageWorks) {
-    return (
-      <div className="dim-page">
-        <ErrorPanel
-          title={t('Help.NoStorage')}
-          fallbackMessage={t('Help.NoStorageMessage')}
-          showTwitters={true}
-        />
-      </div>
-    );
-  }
+export default function App() {
+  const language = useSelector(settingSelector('language'));
+  const itemQuality = useSelector(settingSelector('itemQuality'));
+  const charColMobile = useSelector(settingSelector('charColMobile'));
+  const needsLogin = useSelector((state: RootState) => state.accounts.needsLogin);
+  const needsDeveloper = useSelector((state: RootState) => state.accounts.needsDeveloper);
+  const { pathname, search } = useLocation();
 
   return (
     <div
       key={`lang-${language}`}
-      className={clsx(`lang-${language}`, `char-cols-${charColMobile}`, {
-        'show-reviews': $featureFlags.reviewsEnabled && showReviews,
-        itemQuality: itemQuality,
-        'show-new-items': showNewItems,
-        'ms-edge': /Edge/.test(navigator.userAgent),
-        ios: /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream,
+      className={clsx(styles.app, `lang-${language}`, `char-cols-${charColMobile}`, {
+        itemQuality,
       })}
     >
       <ScrollToTop />
@@ -129,137 +62,90 @@ function App({
         <PageLoading />
         <ErrorBoundary name="DIM Code">
           <Suspense fallback={<ShowPageLoading message={t('Loading.Code')} />}>
-            {/* In the force-login or force-developer cases, the app can only navigate to /login or /developer */}
-            {$DIM_FLAVOR === 'dev' && needsDeveloper ? (
-              <Switch>
-                <Route path="/developer" exact>
-                  <Developer />
-                </Route>
-                <Route>
-                  <Redirect to={'/developer'} />
-                </Route>
-              </Switch>
-            ) : needsLogin ? (
-              <Switch>
-                <Route path="/login" exact>
-                  <Login />
-                </Route>
-                <Route>
-                  <Redirect to={reauth ? '/login?reauth=true' : '/login'} />
-                </Route>
-              </Switch>
-            ) : (
-              <Switch>
-                <Route path="/about" exact>
-                  <About />
-                </Route>
-                <Route path="/privacy" exact>
-                  <Privacy />
-                </Route>
-                <Route path="/whats-new" exact>
-                  <WhatsNew />
-                </Route>
-                <Route path="/login" exact>
-                  <Login />
-                </Route>
-                <Route path="/settings/audit" exact>
-                  <AuditLog />
-                </Route>
-                <Route path="/settings" exact>
-                  <SettingsPage />
-                </Route>
+            <Routes>
+              <Route
+                path="about"
+                element={
+                  <ErrorBoundary name="about" key="about">
+                    <About />
+                  </ErrorBoundary>
+                }
+              />
+              <Route
+                path="privacy"
+                element={
+                  <ErrorBoundary name="privacy" key="privacy">
+                    <Privacy />
+                  </ErrorBoundary>
+                }
+              />
+              <Route
+                path="whats-new"
+                element={
+                  <ErrorBoundary name="whatsNew" key="whatsNew">
+                    <WhatsNew />
+                  </ErrorBoundary>
+                }
+              />
+              <Route
+                path="login"
+                element={
+                  <ErrorBoundary name="login" key="login">
+                    <Login />
+                  </ErrorBoundary>
+                }
+              />
+              <Route
+                path="settings"
+                element={
+                  <ErrorBoundary name="settings" key="settings">
+                    <SettingsPage />
+                  </ErrorBoundary>
+                }
+              />
+              <Route
+                path="debug"
+                element={
+                  <ErrorBoundary name="debug" key="debug">
+                    <Debug />
+                  </ErrorBoundary>
+                }
+              />
+              {$DIM_FLAVOR === 'dev' && (
                 <Route
-                  path="/:membershipId(\d+)/d:destinyVersion(1|2)"
-                  render={({ match }) => (
-                    <Destiny
-                      destinyVersion={parseInt(match.params.destinyVersion, 10) as DestinyVersion}
-                      platformMembershipId={match.params.membershipId}
-                    />
-                  )}
+                  path="developer"
+                  element={
+                    <ErrorBoundary name="developer" key="developer">
+                      <Developer />
+                    </ErrorBoundary>
+                  }
                 />
-                {$DIM_FLAVOR === 'dev' && (
-                  <Route path="/developer" exact>
-                    <Developer />
-                  </Route>
-                )}
-                <Route>
-                  <DefaultAccount />
-                </Route>
-              </Switch>
-            )}
+              )}
+              {needsLogin ? (
+                <Route
+                  path="*"
+                  element={
+                    $DIM_FLAVOR === 'dev' && needsDeveloper ? (
+                      <Navigate to="/developer" />
+                    ) : (
+                      <Navigate to="/login" state={{ path: `${pathname}${search}` }} />
+                    )
+                  }
+                />
+              ) : (
+                <>
+                  <Route path="armory/*" element={<DefaultAccount />} />
+                  <Route path=":membershipId/:destinyVersion/*" element={<Destiny />} />
+                  <Route path="*" element={<DefaultAccount />} />
+                </>
+              )}
+            </Routes>
           </Suspense>
         </ErrorBoundary>
         <NotificationsContainer />
-        <ActivityTracker />
-        {$featureFlags.colorA11y && <ColorA11y />}
+        <AutoRefresh />
         <HotkeysCheatSheet />
-        {$featureFlags.issueBanner && showIssueBanner && !mobile && <IssueBanner />}
       </ClickOutsideRoot>
     </div>
   );
 }
-
-/**
- * For some reason this gets messed up if it's defined in a different file.
- */
-function ColorA11y() {
-  if ($featureFlags.colorA11y) {
-    return (
-      <svg width="0" height="0" className={styles.filters}>
-        <defs>
-          <filter id="protanopia">
-            <feColorMatrix
-              type="matrix"
-              values="0.567,0.433,0,0,0  0.558,0.442,0,0,0  0 0.242,0.758,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="protanomaly">
-            <feColorMatrix
-              type="matrix"
-              values="0.817,0.183,0,0,0  0.333,0.667,0,0,0  0,0.125,0.875,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="deuteranopia">
-            <feColorMatrix
-              type="matrix"
-              values="0.625,0.375,0,0,0  0.7,0.3,0,0,0  0,0.3,0.7,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="deuteranomaly">
-            <feColorMatrix
-              type="matrix"
-              values="0.8,0.2,0,0,0  0.258,0.742,0,0,0  0,0.142,0.858,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="tritanopia">
-            <feColorMatrix
-              type="matrix"
-              values="0.95,0.05,0,0,0  0,0.433,0.567,0,0  0,0.475,0.525,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="tritanomaly">
-            <feColorMatrix
-              type="matrix"
-              values="0.967,0.033,0,0,0  0,0.733,0.267,0,0  0,0.183,0.817,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="achromatopsia">
-            <feColorMatrix
-              type="matrix"
-              values="0.299,0.587,0.114,0,0  0.299,0.587,0.114,0,0  0.299,0.587,0.114,0,0  0,0,0,1,0"
-            />
-          </filter>
-          <filter id="achromatomaly">
-            <feColorMatrix
-              type="matrix"
-              values="0.618,0.320,0.062,0,0  0.163,0.775,0.062,0,0  0.163,0.320,0.516,0,0  0,0,0,1,0"
-            />
-          </filter>
-        </defs>
-      </svg>
-    );
-  }
-  return null;
-}
-
-export default connect<StoreProps>(mapStateToProps)(App);

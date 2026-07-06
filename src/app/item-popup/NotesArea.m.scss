@@ -1,12 +1,13 @@
-@import '../variables.scss';
+@use '../variables.scss' as *;
 
 .openNotesEditor {
   // wraps all the content that clicks open the notes editor
   cursor: pointer;
   margin-top: 0 !important;
   margin-bottom: 0 !important;
-  &:hover {
-    color: $orange;
+
+  @include interactive($hover: true) {
+    color: var(--theme-accent-primary);
   }
   &.noNotesYet {
     // if there's no existing notes, don't span the entire
@@ -33,4 +34,12 @@
     background-color: #eee1;
     height: 55px;
   }
+}
+
+.error {
+  margin: 5px 10px;
+  white-space: pre-wrap;
+  color: #c66;
+  width: 100%;
+  text-align: right;
 }

@@ -1,59 +1,87 @@
-import React from 'react';
+import { rankProgressionHashesSelector } from 'app/manifest/selectors';
+import { LookupTable } from 'app/utils/util-types';
 import { DestinyProfileResponse } from 'bungie-api-ts/destiny2';
-import { CrucibleRank } from './CrucibleRank';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
+import { ProgressionHashes } from 'data/d2/generated-enums';
+import { useSelector } from 'react-redux';
+import PursuitGrid from './PursuitGrid';
+import { ReputationRank } from './ReputationRank';
+import { getCharacterProgressions } from './selectors';
+
+// There are 2 similar DestinyProgression definitions for each rank
+// system. The rank progression definition contains detailed rank names and
+// resetInfo, while the streak progression definition contains information about
+// current streak status. There is no way to map between them automatically, so
+// this table must be kept up to date manually, by pasting the following code
+// into the body of the component while you have some streaks and using that to
+// figure out which unmapped streak progression matches with which rank
+// progression:
+//
+// const defs = useD2Definitions()!;
+// const progressions = Object.values(defs.Progression.getAll()).filter(
+//   (d) =>
+//     d.scope === DestinyProgressionScope.MappedUnlockValue &&
+//     d.steps?.length === 5 &&
+//     !Object.values(rankProgressionToStreakProgression).includes(d.hash)
+// );
+// console.log(
+//   progressions.map((p) => ({
+//     hash: p.hash,
+//     streak: firstCharacterProgression[p.hash].stepIndex,
+//   })),
+//   progressionHashes.map((p) => ({
+//     name: defs?.Progression.get(p).displayProperties.name,
+//     hash: p,
+//   }))
+// );
+
+const rankProgressionToStreakProgression: LookupTable<number, number> = {
+  [ProgressionHashes.StrangeFavor]: 1999336308,
+};
+
+// This set contains progression hashes that should not be displayed in the
+// Ranks component. The API still returns them, but they are no longer visible
+// in the game.
+const hideProgressionHashes = new Set([
+  784742260, // Engram Ensiders (Rahool)
+  2411069437, // Gunsmith Rank
+  1471185389, // Xûr Rank
+  527867935, // Strange Favor (Dares of Eternity)
+]);
+
+// This doesn't show up in the automatic progression hashes, but it is mildly
+// useful in that it will affect your Crucible reward multiplier.
+const crucibleRewardRankProgressionHash = 2206541810;
 
 /**
- * displays all Crucible and Gambit ranks for the account
+ * Displays all ranks for the account
  */
 export default function Ranks({
   profileInfo,
-  defs,
+  children,
 }: {
   profileInfo: DestinyProfileResponse;
-  defs: D2ManifestDefinitions;
+  children?: React.ReactNode;
 }) {
-  const firstCharacterProgression = profileInfo.characterProgressions.data
-    ? Object.values(profileInfo.characterProgressions.data)[0].progressions
-    : {};
-
-  // there are 2 similar DestinyProgression entries for each crucible point system
-  // progressionInfo contains detailed rank names, resetInfo has valor/infamy resets
-  const activityRanks = [
-    {
-      // Valor
-      progressionInfo: firstCharacterProgression[2626549951],
-      resetInfo: firstCharacterProgression[3882308435],
-      streakInfo: firstCharacterProgression[2203850209],
-    },
-    {
-      // Glory
-      progressionInfo: firstCharacterProgression[2000925172],
-      resetInfo: firstCharacterProgression[2679551909],
-      streakInfo: firstCharacterProgression[2572719399],
-    },
-    {
-      // Infamy
-      progressionInfo: firstCharacterProgression[2772425241],
-      resetInfo: firstCharacterProgression[2772425241],
-      streakInfo: firstCharacterProgression[2939151659],
-    },
-  ];
+  const firstCharacterProgression = getCharacterProgressions(profileInfo)?.progressions ?? {};
+  const progressionHashes = useSelector(rankProgressionHashesSelector);
 
   return (
-    <div className="progress-for-character ranks-for-character">
-      {activityRanks.map(
-        (activityRank) =>
-          activityRank.progressionInfo && (
-            <CrucibleRank
-              key={activityRank.progressionInfo.progressionHash}
-              defs={defs}
-              progress={activityRank.progressionInfo}
-              resets={activityRank.resetInfo}
-              streak={activityRank.streakInfo}
+    <PursuitGrid ranks>
+      {children}
+      {[crucibleRewardRankProgressionHash, ...progressionHashes].map(
+        (progressionHash) =>
+          !hideProgressionHashes.has(progressionHash) &&
+          firstCharacterProgression[progressionHash] && (
+            <ReputationRank
+              key={progressionHash}
+              progress={firstCharacterProgression[progressionHash]}
+              streak={
+                firstCharacterProgression[rankProgressionToStreakProgression[progressionHash] ?? 0]
+              }
+              isProgressRanks
             />
-          )
+          ),
       )}
-    </div>
+    </PursuitGrid>
   );
 }

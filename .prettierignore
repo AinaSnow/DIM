@@ -1,8 +1,8 @@
 Gruntfile.js
-extension-dist/
 tools/
 dist/
 extension/
 *.md
 *.yml
 *.m.scss.d.ts
+src/data/**

@@ -3,25 +3,26 @@ import {
   DestinyProgression,
   DestinyVendorComponent,
 } from 'bungie-api-ts/destiny2';
-import React from 'react';
 import { bungieNetPath } from '../dim-ui/BungieImage';
-import './faction.scss';
 import DiamondProgress from '../dim-ui/DiamondProgress';
+import * as styles from './FactionIcon.m.scss';
 
-export default function FactionIcon(props: {
+export default function FactionIcon({
+  factionProgress,
+  factionDef,
+  vendor,
+}: {
   factionProgress: DestinyProgression;
   factionDef: DestinyFactionDefinition;
   vendor?: DestinyVendorComponent;
 }) {
-  const { factionProgress, factionDef, vendor } = props;
-
-  const level = vendor?.seasonalRank ?? factionProgress.level;
+  const level = (vendor?.progression?.level ?? factionProgress.level) + 1;
 
   return (
     <DiamondProgress
       icon={bungieNetPath(factionDef.displayProperties.icon)}
       level={level}
-      className="faction-icon"
+      className={styles.factionIcon}
       progress={factionProgress.progressToNextLevel / factionProgress.nextLevelAt}
     />
   );

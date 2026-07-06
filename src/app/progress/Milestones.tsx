@@ -1,14 +1,22 @@
-import React from 'react';
-import { DimStore } from 'app/inventory/store-types';
-import { DestinyProfileResponse, DestinyMilestone } from 'bungie-api-ts/destiny2';
 import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import WellRestedPerkIcon from './WellRestedPerkIcon';
-import _ from 'lodash';
+import { t } from 'app/i18next-t';
 import { InventoryBuckets } from 'app/inventory/inventory-buckets';
-import { milestoneToItems } from './milestone-items';
+import { DimStore } from 'app/inventory/store-types';
+import { dropPowerLevelSelector } from 'app/inventory/store/selectors';
+import { useD2Definitions } from 'app/manifest/selectors';
+import { uniqBy } from 'app/utils/collections';
+import { compareBy } from 'app/utils/comparators';
+import { DestinyMilestone, DestinyProfileResponse } from 'bungie-api-ts/destiny2';
+import { useSelector } from 'react-redux';
+import * as styles from './Milestones.m.scss';
 import Pursuit from './Pursuit';
+import PursuitGrid from './PursuitGrid';
 import { sortPursuits } from './Pursuits';
-import SeasonalRank from './SeasonalRank';
+import { getEngramPowerBonus } from './engrams';
+import { milestoneToItems } from './milestone-items';
+import { getCharacterProgressions } from './selectors';
+
+const sortPowerBonus = compareBy((powerBonus: number | undefined) => -(powerBonus ?? -1));
 
 /**
  * The list of Milestones for a character. Milestones are different from pursuits and
@@ -17,52 +25,50 @@ import SeasonalRank from './SeasonalRank';
 export default function Milestones({
   profileInfo,
   store,
-  defs,
   buckets,
 }: {
   store: DimStore;
   profileInfo: DestinyProfileResponse;
-  defs: D2ManifestDefinitions;
   buckets: InventoryBuckets;
 }) {
+  const defs = useD2Definitions()!;
   const profileMilestones = milestonesForProfile(defs, profileInfo, store.id);
-  const characterProgressions = profileInfo?.characterProgressions?.data?.[store.id];
-  const season = profileInfo.profile.data?.currentSeasonHash
-    ? defs.Season.get(profileInfo.profile.data.currentSeasonHash)
-    : undefined;
-  const seasonPass = season?.seasonPassHash
-    ? defs.SeasonPass.get(season.seasonPassHash)
-    : undefined;
+  const dropPower = useSelector(dropPowerLevelSelector(store.id));
 
-  const milestoneItems = [
-    ...milestonesForCharacter(defs, profileInfo, store),
-    ...profileMilestones,
-  ].flatMap((milestone) => milestoneToItems(milestone, defs, buckets, store.classType));
+  const milestoneItems = uniqBy(
+    [...milestonesForCharacter(defs, profileInfo, store), ...profileMilestones],
+    (m) => m.milestoneHash,
+  ).flatMap((milestone) => milestoneToItems(milestone, defs, buckets, store));
+
+  const milestonesByPower = Map.groupBy(milestoneItems, (m) => {
+    for (const reward of m.pursuit?.rewards ?? []) {
+      const [powerBonus] = getEngramPowerBonus(reward.itemHash, dropPower, m.hash);
+      if (powerBonus !== undefined) {
+        return powerBonus;
+      }
+    }
+  });
 
   return (
-    <div className="progress-for-character">
-      {characterProgressions && (
-        <SeasonalRank
-          store={store}
-          defs={defs}
-          characterProgressions={characterProgressions}
-          season={season}
-          seasonPass={seasonPass}
-          profileInfo={profileInfo}
-        />
-      )}
-      {characterProgressions && (
-        <WellRestedPerkIcon
-          defs={defs}
-          progressions={characterProgressions}
-          season={season}
-          seasonPass={seasonPass}
-        />
-      )}
-      {milestoneItems.sort(sortPursuits).map((item) => (
-        <Pursuit key={item.hash} item={item} defs={defs} />
+    <>
+      {[...milestonesByPower.keys()].sort(sortPowerBonus).map((powerBonus) => (
+        <div key={powerBonus ?? -1}>
+          <h2 className={styles.header}>
+            {powerBonus === undefined
+              ? t('Progress.PowerBonusHeaderUndefined')
+              : t('Progress.PowerBonusHeader', { powerBonus })}
+          </h2>
+          <PursuitGrid>
+            {milestonesByPower
+              .get(powerBonus)!
+              .sort(sortPursuits)
+              .map((item) => (
+                <Pursuit key={item.hash} item={item} />
+              ))}
+          </PursuitGrid>
+        </div>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -73,7 +79,7 @@ export default function Milestones({
 function milestonesForProfile(
   defs: D2ManifestDefinitions,
   profileInfo: DestinyProfileResponse,
-  characterId: string
+  characterId: string,
 ): DestinyMilestone[] {
   const profileMilestoneData = profileInfo.characterProgressions?.data?.[characterId]?.milestones;
   const allMilestones: DestinyMilestone[] = profileMilestoneData
@@ -82,13 +88,13 @@ function milestonesForProfile(
 
   const filteredMilestones = allMilestones.filter(
     (milestone) =>
-      !milestone.availableQuests &&
-      !milestone.activities &&
-      (milestone.vendors || milestone.rewards) &&
-      defs.Milestone.get(milestone.milestoneHash)
+      !milestone.availableQuests?.length &&
+      !milestone.activities?.length &&
+      (!milestone.vendors?.length || Boolean(milestone.rewards?.length)) &&
+      defs.Milestone.get(milestone.milestoneHash),
   );
 
-  return _.sortBy(filteredMilestones, (milestone) => milestone.order);
+  return filteredMilestones.sort(compareBy((milestone) => milestone.order));
 }
 
 /**
@@ -97,10 +103,9 @@ function milestonesForProfile(
 function milestonesForCharacter(
   defs: D2ManifestDefinitions,
   profileInfo: DestinyProfileResponse,
-  character: DimStore
+  character: DimStore,
 ): DestinyMilestone[] {
-  const characterMilestoneData =
-    profileInfo.characterProgressions?.data?.[character.id]?.milestones;
+  const characterMilestoneData = getCharacterProgressions(profileInfo, character.id)?.milestones;
   const allMilestones: DestinyMilestone[] = characterMilestoneData
     ? Object.values(characterMilestoneData)
     : [];
@@ -110,15 +115,16 @@ function milestonesForCharacter(
     return (
       def &&
       (def.showInExplorer || def.showInMilestones) &&
-      (milestone.activities ||
-        milestone.availableQuests?.every(
+      (Boolean(milestone.activities?.length) ||
+        !milestone.availableQuests?.length ||
+        milestone.availableQuests.every(
           (q) =>
             q.status.stepObjectives.length > 0 &&
             q.status.started &&
-            (!q.status.completed || !q.status.redeemed)
+            (!q.status.completed || !q.status.redeemed),
         ))
     );
   });
 
-  return _.sortBy(filteredMilestones, (milestone) => milestone.order);
+  return filteredMilestones.sort(compareBy((milestone) => milestone.order));
 }

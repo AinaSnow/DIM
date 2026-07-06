@@ -2,117 +2,74 @@
   "editor.tabSize": 2,
   "editor.trimAutoWhitespace": true,
   "files.trimTrailingWhitespace": true,
-  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.tsdk": "./node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
   "editor.formatOnSave": true,
-  "eslint.packageManager": "yarn",
+  "jest.runMode": "on-demand",
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
   "eslint.validate": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
   "search.exclude": {
-    "**/data/d1/manifests": true
+    "**/data/d1/manifests": true,
+    "src/testing/data": true,
+    "destiny-icons": true,
+    "manifest-cache": true
   },
-  "jest.pathToConfig": "jest.config.js",
+  "files.readonlyInclude": {
+    "node_modules/**": true,
+    "src/data/**": true,
+    "destiny-icons/**": true,
+    "src/locale/*": true,
+    "**/*.m.scss.d.ts": true
+  },
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit"
+  },
+  // "jest.jestCommandLine": "NODE_ENV=test LOCAL_MANIFEST=true npx jest --verbose",
   "[javascript]": {
     "editor.codeActionsOnSave": {
-      "source.organizeImports": false
+      "source.organizeImports": "never"
     }
   },
   "[typescript]": {
     "editor.codeActionsOnSave": {
-      "source.organizeImports": false
+      "source.organizeImports": "never"
     }
   },
   "[typescriptreact]": {
     "editor.codeActionsOnSave": {
-      "source.organizeImports": false
+      "source.organizeImports": "never"
     }
   },
-  "cSpell.enabledLanguageIds": ["jsonc", "json", "markdown"],
-  "cSpell.allowCompoundWords": true,
-  "cSpell.ignorePaths": [
-    ".vscode",
-    "node_modules",
-    "src/app",
-    "**/de",
-    "**/es",
-    "**/es-mx",
-    "**/fr",
-    "**/it",
-    "**/ja",
-    "**/ko",
-    "**/pl",
-    "**/pt-br",
-    "**/ru",
-    "**/zh-chs",
-    "**/zh-cht",
-    "package.json",
-    "tsconfig.json"
+  "cSpell.enabledLanguageIds": [
+    "jsonc",
+    "json",
+    "markdown",
+    "javascript",
+    "scss",
+    "typescript",
+    "typescriptreact",
+    "yaml"
   ],
-  "cSpell.words": [
-    "Dont",
-    "Felwinter's",
-    "Reforgeable",
-    "Unacquired",
-    "Upgradei",
-    "archon",
-    "archon's",
-    "bungie",
-    "bungie's",
-    "calus",
-    "cooldown",
-    "crota",
-    "crota's",
-    "crownofsorrow",
-    "cryptarchs",
-    "curations",
-    "dequip",
-    "dequipped",
-    "dequipping",
-    "dequips",
-    "dim",
-    "dim's",
-    "dtr",
-    "dtr's",
-    "dupelower",
-    "equippable",
-    "eververse",
-    "faqd",
-    "felwinter",
-    "fotl",
-    "gamertag",
-    "gjallarhorn",
-    "ikora",
-    "infusable",
-    "inleftchar",
-    "inloadout",
-    "inmiddlechar",
-    "inpostmaster",
-    "inrightchar",
-    "invault",
-    "itemname",
-    "itemtype",
-    "loadout",
-    "loadouts",
-    "lowlines",
-    "merch",
-    "mida",
-    "nessus",
-    "net",
-    "noopener",
-    "notexample",
-    "onwrongclass",
-    "playstation",
-    "rahool",
-    "reddit",
-    "shaxx",
-    "stackable",
-    "teespring",
-    "unequip",
-    "untrack",
-    "variks",
-    "wotm",
-    "xbox",
-    "xpcomplete",
-    "xpincomplete",
-    "xur's",
-    "zavala"
-  ]
+  "css.customData": ["./.vscode/custom.css-data.json"],
+  "css.validate": false,
+  "scss.validate": false,
+  "stylelint.validate": ["css", "scss"],
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "*.ts": "${capture}.js, ${capture}.test.ts",
+    "*.js": "${capture}.js.map, ${capture}.min.js, ${capture}.d.ts, ${capture}.test.js",
+    "*.jsx": "${capture}.js, ${capture}.test.js",
+    "*.tsx": "${capture}.ts, ${capture}.test.ts",
+    "*.m.scss": "${capture}.m.scss.d.ts",
+    "tsconfig.json": "tsconfig.*.json",
+    "package.json": "package-lock.json, pnpm-lock.yaml"
+  },
+  "eslint.lintTask.options": "src",
+  "[javascript][typescript][typescriptreact]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "never"
+    }
+  },
+  "js/ts.tsdk.path": "./node_modules/typescript/lib"
 }

@@ -1,6 +1,6 @@
 import React from 'react';
+import * as styles from './Select.m.scss';
 import { Settings } from './initial-settings';
-import _ from 'lodash';
 
 export default function Select({
   label,
@@ -19,7 +19,7 @@ export default function Select({
   onChange: React.ChangeEventHandler<HTMLSelectElement>;
 }) {
   return (
-    <div className="setting horizontal">
+    <div className={styles.select}>
       <label htmlFor={name}>{label}</label>
       <select name={name} value={value} required={true} onChange={onChange}>
         {options.map((option) => (
@@ -33,12 +33,8 @@ export default function Select({
 }
 
 export function mapToOptions(map: { [key: string]: string }) {
-  return _.map(map, (value, key) => ({
+  return Object.entries(map).map(([key, value]) => ({
     name: value,
     value: key,
   }));
-}
-
-export function listToOptions(list: string[]) {
-  return list.map((value) => ({ value }));
 }

@@ -3,44 +3,102 @@
 //
 // The main stylesheet for all of the styles!
 //
-// Prefer CSS modules, or at least stylesheets that are impored directly by the components that need them, to putting things here.
+// Prefer CSS modules, or at least stylesheets that are imported directly by the components that need them, to putting things here.
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-@import 'variables.scss';
+@use 'variables.scss' as *;
+@use 'themes/theme';
+@use 'themes/theme-dimdark';
+@use 'themes/theme-pyramid';
+@use 'themes/theme-classic';
+@use 'themes/theme-neomuna';
+@use 'themes/theme-throneworld';
+@use 'themes/theme-vexnet';
+@use 'themes/theme-europa';
+@use 'app/dim-ui/dim-button.scss';
 
-:root {
-  // Item width including border
-  --item-size: 50px;
-  // Margin on the bottom and right of an item
-  --item-margin: 6px;
-  // Padding at the ends of inventory column
-  --inventory-column-padding: 12px;
-  // ultimately user-determined. default values here
-  --num-characters: 3;
-  --tiles-per-char-column: 3;
-  --color-filter: '';
-  // equipped item plus character's inventory
-  --character-column-width: calc(
-    (var(--tiles-per-char-column) + 1) * (var(--item-size) + var(--item-margin))
-  );
-  // used for phone protrait mode
-  --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
-  // prevents content shift with persistent scroll-y bar
-  overflow-y: scroll;
-}
-
-@media (max-width: 1025px) {
-  :root {
-    --item-size: 48px;
+@layer base {
+  @font-face {
+    font-family: 'Destiny Symbols';
+    src: url('../data/font/DestinySymbols.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: fallback;
   }
-}
 
-@include phone-portrait {
+  @font-face {
+    font-family: 'DIM Symbols';
+    src: url('../data/font/DIMSymbols.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: fallback;
+  }
+
+  @media (max-width: 1025px) {
+    :root {
+      --item-size: 48px;
+    }
+  }
+
+  @keyframes browser-warning {
+    to {
+      opacity: 0;
+      visibility: hidden;
+    }
+  }
+
   :root {
-    --item-margin: 10px;
+    // Item width including border
+    --item-size: 50px;
+    // Margin on the bottom and right of an item
+    --item-margin: 6px;
     // Padding at the ends of inventory column
     --inventory-column-padding: 12px;
-    /* prettier-ignore */
-    --item-size: calc(
+    // ultimately user-determined. default values here
+    --num-characters: 3;
+    --tiles-per-char-column: 3;
+    // equipped item plus character's inventory
+    --character-column-width: calc(
+      (var(--tiles-per-char-column) + 1) * (var(--item-size) + var(--item-margin))
+    );
+    // used for phone portrait mode
+    --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
+    // The height of the visible viewport, taking into account virtual keyboards on iOS. Set by JS. This is more accurate than 100vh!
+    --viewport-height: 100vh;
+    // The bottom offset of the visual viewport from the layout viewport. Set by JS. This can help attach things to virtual keyboards.
+    --viewport-bottom-offset: 0;
+    // The height of the header including padding that may be added on rounded-corner phones. Set by JS.
+    --header-height: 44px;
+    // The height of the inventory store header section. Set by JS.
+    --store-header-height: 62px;
+
+    // How many desktop mode sidebar trays are open
+    --expanded-sidebars: 0;
+    --sidebar-size: 277px;
+
+    // How big to render each engram in the row of engrams in the Postmaster (on the Inventory screen).
+    --engram-size: calc(var(--character-column-width) / 10);
+
+    // Rumors have it that the Windows scrollbar size is 17px. I always thought
+    // it was 16px.
+    --scrollbar-size: 17px;
+
+    // Whether to display ornament or base icons
+    --ornament-display-opacity: 1;
+    --ornament-display-visibility: auto;
+    --ornament-display-visibility-inverse: hidden;
+
+    // prevents content shift with persistent scroll-y bar
+    overflow-y: scroll;
+  }
+
+  /* stylelint-disable-next-line order/order */
+  @include phone-portrait {
+    :root {
+      --item-margin: 10px;
+      // Padding at the ends of inventory column
+      --inventory-column-padding: 12px;
+      /* prettier-ignore */
+      --item-size: calc(
       (
           100vw -
           var(--column-padding) -
@@ -48,19 +106,20 @@
           var(--combined-item-margins)
         ) / (var(--tiles-per-char-column) + 1)
     ) !important;
-    --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
-    --combined-item-margins: calc(var(--item-margin) * (var(--tiles-per-char-column) + 1));
-    // sets scroll bar back to auto as the content shift an issue at this size.
-    overflow-y: auto;
-  }
+      --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
+      --combined-item-margins: calc(var(--item-margin) * (var(--tiles-per-char-column) + 1));
+      --engram-size: calc((100vw - (2 * var(--inventory-column-padding))) / 10);
+      // sets scroll bar back to auto as the content shift an issue at this size.
+      overflow-y: auto;
+    }
 
-  .char-cols-3 {
-    --item-margin: 15px;
-    // Padding at the ends of inventory column
-    --inventory-column-padding: 34px;
-    // this is duplicated for .char-cols-3 to recalculate using local var adjustments
-    /* prettier-ignore */
-    --item-size: calc(
+    .char-cols-3 {
+      --item-margin: 15px;
+      // Padding at the ends of inventory column
+      --inventory-column-padding: 34px;
+      // this is duplicated for .char-cols-3 to recalculate using local var adjustments
+      /* prettier-ignore */
+      --item-size: calc(
       (
         100vw -
         var(--column-padding) -
@@ -68,349 +127,204 @@
         var(--combined-item-margins)
       ) / (var(--tiles-per-char-column) + 1)
     ) !important;
-    --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
-    --combined-item-margins: calc(var(--item-margin) * (var(--tiles-per-char-column) + 1));
+      --column-padding: calc(2 * var(--inventory-column-padding) - var(--item-margin));
+      --combined-item-margins: calc(var(--item-margin) * (var(--tiles-per-char-column) + 1));
+    }
   }
-}
 
-// Suppress outline on focusable divs
-div[tabindex='-1']:focus {
-  outline: 0;
-}
-
-h1,
-h2,
-h3,
-h4,
-h5 {
-  font-weight: normal;
-}
-
-label {
-  cursor: inherit;
-}
-
-div:focus,
-span:focus {
-  outline-width: 0;
-}
-
-#DTRTooltip {
-  display: none;
-}
-
-@keyframes browser-warning {
-  to {
-    opacity: 0;
-    visibility: hidden;
+  h1,
+  h2,
+  h3,
+  h4,
+  h5 {
+    font-weight: normal;
   }
-}
-#browser-warning {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: #990000;
-  padding: 8px;
-  text-align: center;
-  &.hidden {
-    display: none;
+
+  label {
+    cursor: inherit;
   }
-  animation: 1s linear 10s forwards browser-warning;
-}
 
-/**
-  Misc DIM page
- **/
-.dim-page {
-  // non-inventory page settings
-  max-width: 900px;
-  margin: 0 auto;
-  filter: var(--color-filter);
-}
+  // Styles for the warning saying DIM isn't compatible with your browser. Once this CSS loads the warning will fade out after some time.
+  #browser-warning {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #900;
+    padding: 8px;
+    text-align: center;
+    animation: 1s linear 10s forwards browser-warning;
+    &.hidden {
+      display: none;
+    }
+  }
 
-.currency img {
-  vertical-align: text-bottom;
-  height: 16px;
-  width: 16px;
-}
+  a {
+    color: var(--theme-text);
+    cursor: pointer;
+    text-decoration: underline;
+  }
 
-dt {
-  font-style: italic;
-  font-weight: bold;
-  margin-top: 8px;
-}
+  h2,
+  h3 {
+    margin-top: 20px;
+    margin-bottom: 15px;
+  }
 
-dd {
-  margin: 3px 20px;
-}
+  html,
+  body {
+    // Disable pull to refresh in Android
+    overscroll-behavior: none;
+    // Adjust so the anchor we scroll to doesn't end up behind the header
+    scroll-padding-top: var(--header-height);
 
-a {
-  color: #ddd;
-  cursor: pointer;
-  text-decoration: underline;
-}
+    @include phone-portrait {
+      user-select: none;
+    }
+  }
 
-h2,
-h3 {
-  margin-top: 20px;
-  margin-bottom: 15px;
-}
+  body {
+    margin: 0 auto;
+    background-color: var(--theme-pwa-background);
+    color: var(--theme-text);
+    font-family: 'Open Sans', sans-serif, 'Destiny Symbols', 'DIM Symbols';
+    font-size: 12px;
+    line-height: calc(16 / 12);
+    accent-color: var(--theme-accent-primary);
+    // Disable drag and drop so we can use our polyfill
+    -webkit-user-drag: none;
+    // Don't let iOS Safari mess with font sizes
+    text-size-adjust: none;
+    overflow-wrap: break-word;
+  }
 
-html,
-body {
-  // Disable pull to refresh in Android
-  overscroll-behavior: none;
-}
+  h2,
+  h3,
+  h4 {
+    font-weight: 400;
+  }
 
-body {
-  margin: 0 auto;
-  background-color: #313233;
-  color: white;
-  font-family: 'Open Sans', sans-serif;
-  font-size: 12px;
-  // Disable drag and drop so we can use our polyfill
-  -webkit-user-drag: none;
-}
-
-#system {
-  outline: none;
-  background-color: #fafafa;
-  float: right;
-  cursor: pointer;
-  option {
+  *[role='button'] {
     cursor: pointer;
   }
-}
 
-input,
-select,
-option {
-  font-family: 'Open Sans', sans-serif;
-}
+  /* Forms */
 
-input[type='search'] {
-  -webkit-appearance: textfield;
-}
-
-.drag-help {
-  font-size: 1.5em;
-  position: fixed;
-  backface-visibility: hidden;
-  bottom: 2em;
-  transition: transform 0.5s, opacity 0.5s, background-color 0.1s;
-  background-color: rgba(0, 0, 0, 0.8);
-  left: calc(50% - 15em);
-  width: 30em;
-  right: 0;
-  border-radius: 0.5em;
-  text-align: center;
-  padding: 0.5em;
-  color: #e0e0e0;
-  &.drag-shift-activated {
-    background-color: rgba(0, 60, 0, 0.8);
-  }
-}
-
-.drag-help-hidden {
-  transform: translateY(5em);
-  opacity: 0;
-}
-
-#content {
-  margin: 0 auto;
-  user-select: none;
-  padding-left: constant(safe-area-inset-left);
-  padding-left: env(safe-area-inset-left);
-  padding-right: constant(safe-area-inset-right);
-  padding-right: env(safe-area-inset-right);
-  &::before {
-    clear: both;
-    content: '';
-    display: table;
-    margin-top: -1px;
-    height: 0;
-  }
-}
-
-h2,
-h3,
-h4 {
-  font-weight: 400;
-}
-
-.drag-enter {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.drag-hover {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-.close {
-  width: 16px;
-  height: 16px;
-  display: inline-block;
-  position: absolute;
-  top: 2px;
-  right: calc(2px + var(--item-margin));
-  background-image: url('../images/close.png');
-  background-size: 16px 16px;
-  background-color: rgba(100, 100, 100, 0.8);
-  &:hover {
-    background-color: rgba(0, 0, 0, 1);
-  }
-}
-
-.disabled {
-  opacity: 0.5;
-}
-
-.support h2 {
-  margin-top: 1em;
-  margin-bottom: 0.25em;
-}
-
-.fineprint {
-  font-size: 0.85em;
-  color: #aaa;
-}
-
-.overflow-dots {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  &:hover {
-    overflow: visible;
-  }
-}
-
-.stylizedAnchor {
-  text-decoration: none;
-}
-
-.warning-block {
-  color: white;
-  background: $red;
-  padding: 0.5em 1em;
-  display: inline-block;
-}
-
-/* Forms */
-
-textarea {
-  width: 100%;
-  height: 30px;
-  background-color: #333;
-  padding: 4px 8px;
-  border: none;
-  outline: none;
-  color: white;
-  box-sizing: border-box;
-}
-textarea.textarea-error {
-  margin: 5px 10px;
-  white-space: pre-wrap;
-  color: #cc6666;
-  width: 100%;
-  text-align: right;
-}
-
-select {
-  background: #555;
-  border: none;
-  color: white;
-}
-
-/* Button */
-
-.dim-button {
-  cursor: pointer;
-  background-color: #555;
-  padding: 4px 10px;
-  display: inline-block;
-  border: none;
-  color: white;
-  font-size: 12px;
-  font-family: 'Open Sans', sans-serif;
-  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.25);
-  border-radius: 2px;
-  &:hover {
-    background-color: $orange;
-  }
-  &:active,
-  &.selected {
-    box-shadow: none;
-    background-color: $orange;
-  }
-  input {
-    display: none;
+  input,
+  select,
+  option {
+    font-family: 'Open Sans', sans-serif, 'Destiny Symbols', 'DIM Symbols';
   }
 
-  &[disabled] {
-    opacity: 0.5;
-    cursor: not-allowed;
-    &:hover {
-      background-color: #555;
+  input[type='text'],
+  input[type='search'] {
+    color: var(--theme-text);
+    caret-color: var(--theme-accent-primary);
+    background-color: var(--theme-input-bg);
+  }
+
+  input[type='search'] {
+    appearance: textfield;
+  }
+
+  textarea {
+    width: 100%;
+    height: 30px;
+    background-color: var(--theme-input-bg);
+    padding: 4px 8px;
+    border: none;
+    outline: none;
+    color: var(--theme-text);
+    box-sizing: border-box;
+    font-family: monospace, 'Destiny Symbols', 'DIM Symbols';
+    font-size: inherit;
+    // Setting this makes yuku/textcomplete faster because it doesn't need to make a fake element to measure line height (incorrectly, too)
+    line-height: calc(16 / 12);
+    caret-color: var(--theme-accent-primary);
+
+    @include interactive($hover: true, $focus: true) {
+      box-shadow: inset 0 0 0 1px var(--theme-search-dropdown-border);
     }
   }
-  img {
-    height: 1.3em;
-    width: auto;
-    vertical-align: bottom;
-    margin: 0 0.3em;
-    filter: drop-shadow(0 0 1px black);
-  }
-}
 
-a.dim-button {
-  text-decoration: none;
-}
-
-.split-buttons {
-  .dim-button {
+  select {
+    appearance: none;
+    background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="white" d="M207.029 381.476L12.686 187.132c-9.373-9.373-9.373-24.569 0-33.941l22.667-22.667c9.357-9.357 24.522-9.375 33.901-.04L224 284.505l154.745-154.021c9.379-9.335 24.544-9.317 33.901.04l22.667 22.667c9.373 9.373 9.373 24.569 0 33.941L240.971 381.476c-9.373 9.372-24.569 9.372-33.942 0z"></path></svg>')
+      no-repeat;
+    background-size: 10px;
+    background-position: calc(100% - 10px) center;
+    background-repeat: no-repeat;
     border-radius: 0;
-    border-right: 1px solid #999;
-    margin: 0;
+    background-color: var(--theme-button-bg);
+    padding: 2px 28px 2px 10px;
+    height: 27px;
+    font-size: 12px;
+    line-height: calc(16 / 12);
+    color: var(--theme-text);
+    text-shadow: 1px 1px 3px rgb(0, 0, 0, 0.25);
+    border: 1px solid transparent;
 
-    &:first-child {
-      border-top-left-radius: 2px;
-      border-bottom-left-radius: 2px;
+    @include phone-portrait {
+      font-size: 14px;
+      line-height: calc(18 / 14);
+      padding: 6px 32px 6px 16px;
+      height: 35px;
     }
-    &:last-child {
-      border-top-right-radius: 2px;
-      border-bottom-right-radius: 2px;
-      border-right: 0;
+
+    @include interactive($hover: true, $active: true) {
+      background-color: var(--theme-accent-primary);
+      color: var(--theme-text-invert);
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="black" d="M207.029 381.476L12.686 187.132c-9.373-9.373-9.373-24.569 0-33.941l22.667-22.667c9.357-9.357 24.522-9.375 33.901-.04L224 284.505l154.745-154.021c9.379-9.335 24.544-9.317 33.901.04l22.667 22.667c9.373 9.373 9.373 24.569 0 33.941L240.971 381.476c-9.373 9.372-24.569 9.372-33.942 0z"></path></svg>');
+    }
+    // Set focus styles
+    &:focus {
+      border-color: var(--theme-accent-primary);
+      outline: none;
+    }
+    // For browsers that support :focus-visible, remove focus styles when focus-visible would be unset
+    &:focus:not(:focus-visible) {
+      border-color: transparent;
+    }
+
+    option {
+      background: black;
+      color: var(--theme-text);
     }
   }
-}
 
-.check-button {
-  background-color: #555;
-  border-radius: 2px;
-  border: none;
-  box-sizing: border-box;
-  color: white;
-  cursor: pointer;
-  display: flex;
-  flex-direction: row;
-  justify-content: space-between;
-  font-family: 'Open Sans', sans-serif;
-  font-size: 12px;
-  margin-bottom: 4px;
-  margin-right: 4px;
-  padding: 4px 6px 4px 10px;
-  text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.25);
-
-  &:hover {
-    background-color: $orange;
+  code {
+    position: relative;
+    background: rgb(255, 255, 255, 0.05);
+    border: 1px solid rgb(255, 255, 255, 0.1);
+    border-radius: 3px;
+    padding: 0 4px;
+    bottom: 1px;
   }
 
-  &:active {
-    box-shadow: none;
-    background-color: $orange;
+  /**
+    Misc DIM page
+   **/
+  .dim-page {
+    // non-inventory page settings
+    max-width: 900px;
+    margin: 0 auto;
   }
 
+  // Use this to make images not tappable (Android Chrome will show a download menu)
+  .no-pointer-events,
   .app-icon {
-    margin: auto 0 auto 4px;
+    @include phone-portrait {
+      pointer-events: none;
+    }
+  }
+
+  .horizontal-swipable {
+    touch-action: pan-y;
+  }
+
+  // bungie's stat icons are semitransparent... boooo.
+  // when applied to an armor stat icon, this bolsters their visibility with a same-size dropshadow
+  .stat-icon {
+    filter: drop-shadow(0 0 0 #fff);
   }
 }

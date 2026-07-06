@@ -1,158 +1,227 @@
+import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
+import { createCollectibleFinder } from 'app/records/collectible-matching';
+import { THE_FORBIDDEN_BUCKET, VendorHashes } from 'app/search/d2-known-values';
+import { emptyArray } from 'app/utils/empty';
 import {
-  DestinyVendorItemDefinition,
-  DestinyVendorSaleItemComponent,
-  DestinyItemComponentSetOfint32,
-  DestinyVendorDefinition,
-  DestinyItemSocketEntryPlugItemDefinition,
+  DestinyClass,
+  DestinyCollectibleState,
   DestinyDisplayPropertiesDefinition,
+  DestinyInventoryItemDefinition,
   DestinyItemQuantity,
-  DestinyCollectibleComponent,
+  DestinyProfileResponse,
+  DestinyVendorDefinition,
+  DestinyVendorItemDefinition,
+  DestinyVendorItemState,
+  DestinyVendorSaleItemComponent,
 } from 'bungie-api-ts/destiny2';
-import { D2ManifestDefinitions } from '../destiny2/d2-definitions';
-import { makeFakeItem } from '../inventory/store/d2-item-factory';
+import { BucketHashes } from 'data/d2/generated-enums';
 import { DimItem } from '../inventory/item-types';
-import { InventoryBuckets } from '../inventory/inventory-buckets';
-import _ from 'lodash';
-import { VENDORS } from 'app/search/d2-known-values';
+import { ItemCreationContext, makeFakeItem } from '../inventory/store/d2-item-factory';
+
+const SYNTH_BOUNTIES_EXHAUSTED = [1073165367, 2363327331, 2376000422];
+const SYNTH_BOUNTIES_DUMMY = [171866827, 540971012, 3950721485];
+const DestinyClassToSynthTooltipIndex: { [key in DestinyClass]: number } = {
+  [DestinyClass.Titan]: 1,
+  [DestinyClass.Hunter]: 2,
+  [DestinyClass.Warlock]: 0,
+  [DestinyClass.Classified]: -1,
+  [DestinyClass.Unknown]: -1,
+};
 
 /**
- * A displayable vendor item.
+ * This represents an item inside a vendor.
  */
-export class VendorItem {
-  static forPlugSetItem(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    plugItemDef: DestinyItemSocketEntryPlugItemDefinition,
-    canPurchase = true
-  ): VendorItem {
-    return new VendorItem(
-      defs,
-      buckets,
-      plugItemDef.plugItemHash,
-      [],
-      0,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      canPurchase
-    );
-  }
-
-  static forVendorSaleItem(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    vendorDef: DestinyVendorDefinition,
-    saleItem: DestinyVendorSaleItemComponent,
-    itemComponents?: DestinyItemComponentSetOfint32,
-    mergedCollectibles?: {
-      [hash: number]: DestinyCollectibleComponent;
-    }
-  ): VendorItem {
-    const vendorItemDef = vendorDef.itemList[saleItem.vendorItemIndex];
-    const failureStrings =
-      saleItem && vendorDef
-        ? (saleItem.failureIndexes || []).map((i) => vendorDef.failureStrings[i])
-        : [];
-
-    return new VendorItem(
-      defs,
-      buckets,
-      saleItem.itemHash,
-      failureStrings,
-      vendorDef.hash,
-      vendorItemDef,
-      saleItem,
-      itemComponents,
-      mergedCollectibles
-    );
-  }
-
-  static forVendorDefinitionItem(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    vendorItemDef: DestinyVendorItemDefinition,
-    mergedCollectibles?: {
-      [hash: number]: DestinyCollectibleComponent;
-    }
-  ): VendorItem {
-    return new VendorItem(
-      defs,
-      buckets,
-      vendorItemDef.itemHash,
-      [],
-      0,
-      vendorItemDef,
-      undefined,
-      undefined,
-      mergedCollectibles
-    );
-  }
-
-  readonly item: DimItem | null;
-  readonly canPurchase: boolean;
+export interface VendorItem {
+  readonly item: DimItem | undefined;
   readonly failureStrings: string[];
-  readonly key: number;
+  /** The index in the vendor definition's saleItems array. Unique to this item within a vendor. */
+  readonly vendorItemIndex: number;
   readonly displayProperties: DestinyDisplayPropertiesDefinition;
   readonly borderless: boolean;
   readonly displayTile: boolean;
+  /** Indicates that the vendor API marks this item as owned, which is used for upgrades. */
+  readonly owned: boolean;
+  /** Indicates that the vendor API marks this item as locked, which is used for time-gated upgrades */
+  readonly locked: boolean;
   readonly canBeSold: boolean;
   readonly displayCategoryIndex?: number;
+  readonly originalCategoryIndex?: number;
   readonly costs: DestinyItemQuantity[];
-  readonly previewVendorHash: number;
+  readonly previewVendorHash?: number;
+  /** The state of this item in the user's D2 Collection */
+  readonly collectibleState?: DestinyCollectibleState;
+}
 
-  constructor(
-    defs: D2ManifestDefinitions,
-    buckets: InventoryBuckets,
-    itemHash: number,
-    failureStrings: string[],
-    vendorHash: number,
-    vendorItemDef?: DestinyVendorItemDefinition,
-    saleItem?: DestinyVendorSaleItemComponent,
-    // TODO: this'll be useful for showing the move-popup details
-    itemComponents?: DestinyItemComponentSetOfint32,
-    mergedCollectibles?: {
-      [hash: number]: DestinyCollectibleComponent;
-    },
-    canPurchase = true
-  ) {
-    const inventoryItem = defs.InventoryItem.get(itemHash);
+/**
+ * Find the state of this item in the user's collections. This takes into account
+ * the selected character.
+ */
+function getCollectibleState(
+  defs: D2ManifestDefinitions,
+  inventoryItem: DestinyInventoryItemDefinition,
+  profileResponse: DestinyProfileResponse | undefined,
+  characterId: string,
+) {
+  const collectibleFinder = createCollectibleFinder(defs);
+  const collectibleHash = collectibleFinder(inventoryItem)?.hash;
+  let collectibleState: DestinyCollectibleState | undefined;
+  if (collectibleHash) {
+    collectibleState =
+      profileResponse?.profileCollectibles?.data?.collectibles[collectibleHash]?.state ??
+      (characterId
+        ? profileResponse?.characterCollectibles?.data?.[characterId]?.collectibles[collectibleHash]
+            ?.state
+        : undefined);
+  }
+  return collectibleState;
+}
 
-    this.canPurchase = canPurchase;
-    this.failureStrings = failureStrings;
-    this.key = saleItem ? saleItem.vendorItemIndex : inventoryItem.hash;
-    this.displayProperties = inventoryItem.displayProperties;
-    this.borderless = Boolean(inventoryItem.uiItemDisplayStyle);
-    this.displayTile = inventoryItem.uiItemDisplayStyle === 'ui_display_style_set_container';
-    this.canBeSold = !saleItem || saleItem.failureIndexes.length === 0;
-    this.displayCategoryIndex = vendorItemDef ? vendorItemDef.displayCategoryIndex : undefined;
-    this.costs = saleItem?.costs || [];
-    if (inventoryItem.preview?.previewVendorHash) {
-      this.previewVendorHash = inventoryItem.preview.previewVendorHash;
-    }
+function makeVendorItem(
+  context: ItemCreationContext,
+  itemHash: number,
+  failureStrings: string[],
+  vendorHash: number,
+  vendorItemDef: DestinyVendorItemDefinition,
+  saleItem: DestinyVendorSaleItemComponent | undefined,
+  // the character to whom this item is being offered
+  characterId: string,
+  // the index in the vendor's items array
+  vendorItemIndex: number,
+  nextRefreshDate?: string,
+): VendorItem {
+  const { defs, profileResponse } = context;
 
-    this.item = makeFakeItem(
-      defs,
-      buckets,
-      itemComponents,
-      itemHash,
-      saleItem ? saleItem.vendorItemIndex.toString() : itemHash.toString(),
-      vendorItemDef ? vendorItemDef.quantity : 1,
-      mergedCollectibles
-    );
-
-    if (this.item) {
-      this.item.hidePercentage = true;
-    }
-
-    // only apply for 2255782930, master rahool
-    if (vendorHash === VENDORS.RAHOOL && saleItem?.overrideStyleItemHash && this.item) {
-      const itemDef = defs.InventoryItem.get(saleItem.overrideStyleItemHash);
-      if (itemDef) {
-        const display = itemDef.displayProperties;
-        this.item.name = display.name;
-        this.item.icon = display.icon;
-      }
+  const inventoryItem = defs.InventoryItem.get(itemHash);
+  let tooltipNotificationIndexes: number[] = [];
+  if (SYNTH_BOUNTIES_EXHAUSTED.includes(itemHash)) {
+    tooltipNotificationIndexes = [0];
+  } else if (SYNTH_BOUNTIES_DUMMY.includes(itemHash)) {
+    const classType = profileResponse?.characters?.data?.[characterId]?.classType;
+    if (classType !== undefined && DestinyClassToSynthTooltipIndex[classType] > -1) {
+      tooltipNotificationIndexes = [DestinyClassToSynthTooltipIndex[classType]];
     }
   }
+  const vendorItem: VendorItem = {
+    failureStrings,
+    vendorItemIndex,
+    displayProperties: inventoryItem.displayProperties,
+    borderless: Boolean(inventoryItem.uiItemDisplayStyle),
+    displayTile: inventoryItem.uiItemDisplayStyle === 'ui_display_style_set_container',
+    owned: Boolean(
+      (!inventoryItem.inventory ||
+        inventoryItem.inventory.bucketTypeHash === THE_FORBIDDEN_BUCKET) &&
+      (saleItem?.augments || 0) & DestinyVendorItemState.Owned,
+    ),
+    locked: Boolean((saleItem?.augments || 0) & DestinyVendorItemState.Locked),
+    canBeSold: !saleItem || saleItem.failureIndexes.length === 0,
+    displayCategoryIndex: vendorItemDef?.displayCategoryIndex,
+    originalCategoryIndex: vendorItemDef?.originalCategoryIndex,
+    costs: saleItem?.costs || [],
+    previewVendorHash: inventoryItem.preview?.previewVendorHash,
+    collectibleState: getCollectibleState(
+      context.defs,
+      inventoryItem,
+      profileResponse,
+      characterId,
+    ),
+    item: makeFakeItem(context, itemHash, {
+      // For sale items the item ID needs to be the vendor item index, since that's how we look up item components for perks
+      itemInstanceId: vendorItemIndex.toString(),
+      quantity: vendorItemDef ? vendorItemDef.quantity : 1,
+      // vendor items are wish list enabled!
+      allowWishList: true,
+      itemValueVisibility: saleItem?.itemValueVisibility,
+      tooltipNotificationIndexes,
+    }),
+  };
+
+  if (vendorItem.item) {
+    vendorItem.item.hidePercentage = true;
+
+    // override the DimItem.id for vendor items, so they are each unique enough to identify
+    // (otherwise they'd get their vendor index as an id, which is only unique per-vendor)
+    // Lowercase to match post-parsing filter strings with `id:`
+    vendorItem.item.id = `${vendorHash}-${vendorItem.vendorItemIndex}-${nextRefreshDate?.toLowerCase() ?? '0'}`;
+    vendorItem.item.index = vendorItem.item.id;
+    vendorItem.item.instanced = false;
+    // These would normally be false already, but certain rules like "finishers
+    // are lockable" mess that up, so we set them explicitly here.
+    vendorItem.item.lockable = false;
+
+    // since this is sold by a vendor, add vendor information
+    vendorItem.item.vendor = { vendorHash, vendorItemIndex, characterId };
+    if (vendorItem.item.equipment && vendorItem.item.bucket.hash !== BucketHashes.Emblems) {
+      vendorItem.item.comparable = true;
+    }
+  }
+
+  // only apply for 2255782930, master rahool
+  if (vendorHash === VendorHashes.Rahool && saleItem?.overrideStyleItemHash && vendorItem.item) {
+    const itemDef = defs.InventoryItem.get(saleItem.overrideStyleItemHash);
+    if (itemDef) {
+      const display = itemDef.displayProperties;
+      vendorItem.item.name = display.name;
+      vendorItem.item.icon = display.icon;
+    }
+  }
+
+  return vendorItem;
+}
+
+/**
+ * creates a VendorItem being sold by a vendor in the API vendors response.
+ * this can include "instanced" stats plugs etc which describe the specifics
+ * of that copy they're selling
+ */
+export function vendorItemForSaleItem(
+  context: ItemCreationContext,
+  vendorDef: DestinyVendorDefinition,
+  saleItem: DestinyVendorSaleItemComponent,
+  /** all DIM vendor calls are character-specific. any sale item should have an associated character. */
+  characterId: string,
+  nextRefreshDate?: string,
+): VendorItem {
+  const vendorItemDef = vendorDef.itemList[saleItem.vendorItemIndex];
+  const failureStrings =
+    saleItem && vendorDef && saleItem.failureIndexes
+      ? saleItem.failureIndexes.map((i) => vendorDef.failureStrings[i])
+      : emptyArray<string>();
+
+  return makeVendorItem(
+    context,
+    saleItem.itemHash,
+    failureStrings,
+    vendorDef.hash,
+    vendorItemDef,
+    saleItem,
+    characterId,
+    saleItem.vendorItemIndex,
+    nextRefreshDate,
+  );
+}
+
+/**
+ * creates a VendorItem solely according to a vendor's definition.
+ * some vendors are set up so statically, that they have no data in the live Vendors response
+ */
+export function vendorItemForDefinitionItem(
+  context: ItemCreationContext,
+  vendorItemDef: DestinyVendorItemDefinition,
+  characterId: string,
+  // the index in the vendor's items array
+  vendorItemIndex: number,
+  nextRefreshDate?: string,
+): VendorItem {
+  const item = makeVendorItem(
+    context,
+    vendorItemDef.itemHash,
+    [],
+    0,
+    vendorItemDef,
+    undefined,
+    characterId,
+    vendorItemIndex,
+    nextRefreshDate,
+  );
+  return item;
 }

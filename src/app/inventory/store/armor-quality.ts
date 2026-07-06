@@ -1,3 +1,5 @@
+import { D1BucketHashes } from 'app/search/d1-known-values';
+import { BucketHashes } from 'data/d2/generated-enums';
 import { D1Stat } from '../item-types';
 
 /**
@@ -14,35 +16,35 @@ import { D1Stat } from '../item-types';
 export function getQualityRating(
   stats: D1Stat[] | null,
   light: { value: number },
-  type: string
+  bucketHash: BucketHashes | D1BucketHashes,
 ): {
   min: number;
   max: number;
   range: string;
 } | null {
-  if (!stats || !stats.length || !light || light.value < 280) {
+  if (!stats?.length || !light || light.value < 280) {
     return null;
   }
 
-  let split = 0;
-  switch (type.toLowerCase()) {
-    case 'helmet':
+  let split: number;
+  switch (bucketHash) {
+    case BucketHashes.Helmet:
       split = 46; // bungie reports 48, but i've only seen 46
       break;
-    case 'gauntlets':
+    case BucketHashes.Gauntlets:
       split = 41; // bungie reports 43, but i've only seen 41
       break;
-    case 'chest':
+    case BucketHashes.ChestArmor:
       split = 61;
       break;
-    case 'leg':
+    case BucketHashes.LegArmor:
       split = 56;
       break;
-    case 'classitem':
-    case 'ghost':
+    case BucketHashes.ClassArmor:
+    case BucketHashes.Ghost:
       split = 25;
       break;
-    case 'artifact':
+    case D1BucketHashes.Artifact:
       split = 38;
       break;
     default:
@@ -58,7 +60,7 @@ export function getQualityRating(
   };
 
   let pure = 0;
-  stats.forEach((stat) => {
+  for (const stat of stats) {
     let scaled = {
       min: 0,
       max: 0,
@@ -76,10 +78,10 @@ export function getQualityRating(
     };
     ret.total.min += scaled.min || 0;
     ret.total.max += scaled.max || 0;
-  });
+  }
 
   if (pure === ret.total.min) {
-    stats.forEach((stat) => {
+    for (const stat of stats) {
       if (stat.scaled) {
         stat.scaled = {
           min: Math.floor(stat.scaled.min / 2),
@@ -93,7 +95,7 @@ export function getQualityRating(
           };
         }
       }
-    });
+    }
   }
 
   let quality = {
@@ -102,8 +104,8 @@ export function getQualityRating(
     range: '',
   };
 
-  if (type.toLowerCase() !== 'artifact') {
-    stats.forEach((stat) => {
+  if (bucketHash !== D1BucketHashes.Artifact) {
+    for (const stat of stats) {
       if (stat.qualityPercentage) {
         stat.qualityPercentage = {
           range: '',
@@ -111,7 +113,7 @@ export function getQualityRating(
           max: Math.min(100, stat.qualityPercentage.max),
         };
       }
-    });
+    }
     quality = {
       min: Math.min(100, quality.min),
       max: Math.min(100, quality.max),
@@ -119,11 +121,11 @@ export function getQualityRating(
     };
   }
 
-  stats.forEach((stat) => {
+  for (const stat of stats) {
     if (stat.qualityPercentage) {
       stat.qualityPercentage.range = getQualityRange(light.value, stat.qualityPercentage);
     }
-  });
+  }
   quality.range = getQualityRange(light.value, quality);
 
   return quality;
@@ -144,7 +146,7 @@ function getQualityRange(light: number, quality: { min: number; max: number }): 
   }%`;
 }
 
-function fitValue(light) {
+function fitValue(light: number) {
   if (light > 300) {
     return 0.2546 * light - 23.825;
   } else if (light > 200) {
@@ -154,7 +156,7 @@ function fitValue(light) {
   }
 }
 
-function getScaledStat(base, light) {
+function getScaledStat(base: number, light: number) {
   const max = 335;
 
   if (light > 335) {

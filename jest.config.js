@@ -1,34 +1,39 @@
-const { pathsToModuleNameMapper } = require('ts-jest/utils');
-const { compilerOptions } = require('./tsconfig');
+import { pathsToModuleNameMapper } from 'ts-jest';
+import tsconfig from './tsconfig.json' with { type: 'json' };
 
-module.exports = {
-  transform: { '\\.(t|j)s$': ['ts-jest'] },
-  preset: 'ts-jest',
+const tsconfigPaths = { ...tsconfig.compilerOptions.paths };
+delete tsconfigPaths['*'];
+
+export default {
+  testEnvironment: 'jsdom',
+  reporters: ['default', 'jest-junit'],
   verbose: true,
+  testTimeout: 60000,
+  roots: ['<rootDir>'],
+  modulePaths: tsconfig.compilerOptions.baseUrl ? [tsconfig.compilerOptions.baseUrl] : [],
   moduleNameMapper: {
-    '\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$':
+    '\\.(jpg|jpeg|a?png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)(\\?react)?$':
       '<rootDir>/src/__mocks__/fileMock.js',
-    ...pathsToModuleNameMapper(compilerOptions.paths, { prefix: '<rootDir>/' }),
-    '^.+\\.scss$': 'identity-obj-proxy',
+    // Automatically include paths from tsconfig
+    ...pathsToModuleNameMapper(tsconfigPaths, { prefix: '<rootDir>/' }),
+    '^.+\\.s?css$': 'identity-obj-proxy',
+    'Library\\.mjs$': 'identity-obj-proxy',
   },
-  transformIgnorePatterns: ['node_modules/?!(bungie-api-ts)'],
+  setupFiles: ['./src/testing/jest-setup.cjs'],
+  // Babel transform is required to handle some es modules?
+  transformIgnorePatterns: [
+    'node_modules/.pnpm/(?!bungie-api-ts|@destinyitemmanager|@floating-ui|@react-hook)',
+  ],
   globals: {
     $BROWSERS: [],
     $DIM_FLAVOR: 'test',
+    $DIM_WEB_API_KEY: 'xxx',
+    $DIM_API_KEY: 'xxx',
+    $DIM_VERSION: '1.0.0',
     $featureFlags: {
       dimApi: true,
-    },
-    'ts-jest': {
-      diagnostics: {
-        warnOnly: true,
-        pathRegex: /\.(spec|test)\.ts$/,
-      },
-      tsConfig: {
-        target: 'ES2015',
-        jsx: 'react',
-        allowJs: true,
-        lib: ['dom', 'esnext'],
-      },
+      runLoInBackground: true,
+      sentry: false,
     },
   },
 };

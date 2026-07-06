@@ -1,42 +1,14 @@
-import React from 'react';
-import {
-  AppIcon,
-  starIcon,
-  thumbsUpIcon,
-  thumbsDownIcon,
-  faCaretDown,
-  faCaretUp,
-  faMinus,
-} from '../shell/icons';
-import './RatingIcon.scss';
+import { t } from 'app/i18next-t';
 import { UiWishListRoll } from 'app/wishlists/wishlists';
+import { AppIcon, thumbsDownIcon, thumbsUpIcon } from '../shell/icons';
+import * as styles from './RatingIcon.m.scss';
 
-export default function RatingIcon({
-  rating,
-  uiWishListRoll,
-}: {
-  rating: number;
-  uiWishListRoll?: UiWishListRoll;
-}) {
-  if (uiWishListRoll) {
-    if (uiWishListRoll === UiWishListRoll.Bad) {
-      return <AppIcon className="trashlist rating-icon" icon={thumbsDownIcon} />;
-    }
-
-    return <AppIcon className="godroll rating-icon" icon={thumbsUpIcon} />;
+export default function RatingIcon({ uiWishListRoll }: { uiWishListRoll: UiWishListRoll }) {
+  if (uiWishListRoll === UiWishListRoll.Bad) {
+    return (
+      <AppIcon className={styles.trashlist} icon={thumbsDownIcon} title={t('Item.ThumbsDown')} />
+    );
   }
 
-  if (rating === 5) {
-    return <AppIcon className="godroll rating-icon" icon={starIcon} />;
-  }
-
-  if (rating < 4) {
-    return <AppIcon className="dogroll rating-icon" icon={faCaretDown} />;
-  }
-
-  if (rating >= 4.7) {
-    return <AppIcon className="goodroll rating-icon" icon={faCaretUp} />;
-  }
-
-  return <AppIcon className="mehroll rating-icon" icon={faMinus} />;
+  return <AppIcon className={styles.godroll} icon={thumbsUpIcon} title={t('Item.ThumbsUp')} />;
 }

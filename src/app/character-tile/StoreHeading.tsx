@@ -1,103 +1,122 @@
-import React, { useRef, useState } from 'react';
-import clsx from 'clsx';
-import { DimStore } from '../inventory/store-types';
+import { useFixOverscrollBehavior } from 'app/dim-ui/useFixOverscrollBehavior';
+import { usePopper } from 'app/dim-ui/usePopper';
 import { t } from 'app/i18next-t';
-import './StoreHeading.scss';
-import LoadoutPopup from '../loadout/LoadoutPopup';
+import { isD1Store } from 'app/inventory/stores-helpers';
+import LoadoutPopup from 'app/loadout/loadout-menu/LoadoutPopup';
+import { Portal } from 'app/utils/temp-container';
+import React, { useCallback, useRef, useState } from 'react';
 import ClickOutside from '../dim-ui/ClickOutside';
-import ReactDOM from 'react-dom';
-import { AppIcon, faEllipsisV } from '../shell/icons';
+import { DimStore } from '../inventory/store-types';
+import { AppIcon, kebabIcon } from '../shell/icons';
 import CharacterHeaderXPBar from './CharacterHeaderXP';
-import CharacterTile from './CharacterTile';
-
-interface Props {
-  store: DimStore;
-  /** If this ref is provided, the loadout menu will be placed inside of it instead of in this tile. */
-  loadoutMenuRef?: React.RefObject<HTMLElement>;
-  /** For mobile, this is whichever store is visible at the time. */
-  selectedStore?: DimStore;
-  /** Fires if a store other than the selected store is tapped. */
-  onTapped?(storeId: string): void;
-}
+import CharacterTileButton from './CharacterTileButton';
+import * as styles from './StoreHeading.m.scss';
 
 // Wrap the {CharacterTile} with a button for the loadout menu and the D1 XP progress bar
-const CharacterHeader = ({
+function CharacterHeader({
   store,
-  loadoutMenuOpen,
-  menuRef,
   onClick,
+  ref,
 }: {
   store: DimStore;
-  loadoutMenuOpen: boolean;
-  menuRef: React.RefObject<HTMLDivElement>;
   onClick: () => void;
-}) => (
-  <div
-    className={clsx('character', {
-      current: store.current,
-      destiny1: store.isDestiny1(),
-      destiny2: store.isDestiny2(),
-      vault: store.isVault,
-    })}
-    ref={menuRef}
-    onClick={onClick}
-  >
-    <CharacterTile store={store} />
-    <div
-      className={clsx('loadout-button', {
-        'loadout-open': loadoutMenuOpen,
-      })}
+  ref?: React.Ref<HTMLButtonElement>;
+}) {
+  return (
+    <CharacterTileButton
+      ref={ref}
+      character={store}
+      onClick={onClick}
+      className={styles.characterHeader}
     >
-      <AppIcon icon={faEllipsisV} title={t('Loadouts.Loadouts')} />
-    </div>
-    {!store.isVault && store.isDestiny1() && <CharacterHeaderXPBar store={store} />}
-  </div>
-);
+      <div className={styles.loadoutButton}>
+        <AppIcon icon={kebabIcon} title={t('Loadouts.Loadouts')} />
+      </div>
+      {!store.isVault && isD1Store(store) && <CharacterHeaderXPBar store={store} />}
+    </CharacterTileButton>
+  );
+}
 
 /**
  * This is the character dropdown used at the top of the inventory page.
  * It will render a {CharacterTile} in addition to a button for the loadout menu
  */
-export default function StoreHeading({ store, selectedStore, loadoutMenuRef, onTapped }: Props) {
+export default function StoreHeading({
+  store,
+  selectedStore,
+  onTapped,
+}: {
+  store: DimStore;
+  /** For mobile, this is whichever store is visible at the time. */
+  selectedStore?: DimStore;
+  /** Fires if a store other than the selected store is tapped. */
+  onTapped?: (storeId: string) => void;
+}) {
   const [loadoutMenuOpen, setLoadoutMenuOpen] = useState(false);
-  const menuTrigger = useRef<HTMLDivElement>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
 
-  const openLoadoutPopup = () => {
-    if (store !== selectedStore && onTapped) {
-      onTapped?.(store.id);
+  const handleCloseLoadoutMenu = useCallback(() => {
+    setLoadoutMenuOpen(false);
+  }, []);
+
+  const useOnTapped = store !== selectedStore && onTapped;
+  const openLoadoutPopup = useCallback(() => {
+    if (useOnTapped) {
+      onTapped(store.id);
       return;
     }
     setLoadoutMenuOpen((open) => !open);
-  };
+  }, [onTapped, store.id, useOnTapped]);
 
-  const clickOutsideLoadoutMenu = (e) => {
-    if (!e || !menuTrigger.current || !menuTrigger.current.contains(e.target)) {
-      setLoadoutMenuOpen(false);
-    }
-  };
+  const loadoutMenu = loadoutMenuOpen && (
+    <Portal>
+      <LoadoutMenuContents
+        store={store}
+        onClose={handleCloseLoadoutMenu}
+        menuTrigger={menuTrigger}
+      />
+    </Portal>
+  );
 
-  let loadoutMenu: React.ReactNode | undefined;
-  if (loadoutMenuOpen) {
-    const menuContents = (
-      <ClickOutside onClickOutside={clickOutsideLoadoutMenu} className="loadout-menu">
-        <LoadoutPopup dimStore={store} onClick={clickOutsideLoadoutMenu} />
-      </ClickOutside>
-    );
+  // TODO: aria "open"
+  return (
+    <>
+      <CharacterHeader store={store} ref={menuTrigger} onClick={openLoadoutPopup} />
+      {loadoutMenu}
+    </>
+  );
+}
 
-    loadoutMenu = loadoutMenuRef
-      ? ReactDOM.createPortal(menuContents, loadoutMenuRef.current!)
-      : menuContents;
-  }
+// This is broken out into its own component so that useFixOverscrollBehavior can run *only* when the menu element exists.
+function LoadoutMenuContents({
+  store,
+  onClose,
+  menuTrigger,
+}: {
+  store: DimStore;
+  onClose: () => void;
+  menuTrigger: React.RefObject<HTMLButtonElement | null>;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useFixOverscrollBehavior(menuRef);
+
+  usePopper({
+    contents: menuRef,
+    reference: menuTrigger,
+    placement: 'bottom-start',
+    fixed: true,
+    padding: 0,
+  });
 
   return (
-    <div>
-      <CharacterHeader
-        store={store}
-        loadoutMenuOpen={loadoutMenuOpen}
-        menuRef={menuTrigger}
-        onClick={openLoadoutPopup}
-      />
-      {loadoutMenu}
-    </div>
+    <ClickOutside
+      onClickOutside={onClose}
+      ref={menuRef}
+      extraRef={menuTrigger}
+      className={styles.loadoutMenu}
+    >
+      <LoadoutPopup dimStore={store} onClick={onClose} />
+    </ClickOutside>
   );
 }

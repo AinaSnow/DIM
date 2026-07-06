@@ -1,23 +1,30 @@
+import { noop } from 'app/utils/functions';
+
+/**
+ * A rate limiter queue applies when the path of a request matches its regex. It will implement the semantics of
+ * Bungie.net's rate limiter (expressed in API docs via ThrottleSecondsBetweenActionPerUser), which requires that
+ * we wait a specified amount between the start of certain actions.
+ */
 export class RateLimiterQueue {
   pattern: RegExp;
-  requestLimit: number;
+  /** In milliseconds */
   timeLimit: number;
   queue: {
     fetcher: typeof fetch;
-    request: Request | string;
+    request: RequestInfo | URL;
     options?: RequestInit;
-    resolver();
-    rejecter();
+    resolver: (value?: any) => void;
+    rejecter: (value?: any) => void;
   }[] = [];
   /** number of requests in the current period */
   count = 0;
+  /** The time the latest request started */
   lastRequestTime = window.performance.now();
   timer?: number;
 
-  constructor(pattern: RegExp, requestLimit: number, timeLimit: number) {
+  constructor(pattern: RegExp, timeLimit: number) {
     this.pattern = pattern;
-    this.requestLimit = requestLimit;
-    this.timeLimit = timeLimit || 1000;
+    this.timeLimit = timeLimit;
   }
 
   matches(url: string) {
@@ -25,9 +32,9 @@ export class RateLimiterQueue {
   }
 
   // Add a request to the queue, acting on it immediately if possible
-  add<T>(fetcher: typeof fetch, request: Request | string, options?: RequestInit): Promise<T> {
-    let resolver;
-    let rejecter;
+  add<T>(fetcher: typeof fetch, request: RequestInfo | URL, options?: RequestInit): Promise<T> {
+    let resolver: (value?: any) => void = noop;
+    let rejecter: (value?: any) => void = noop;
     const promise = new Promise<T>((resolve, reject) => {
       resolver = resolve;
       rejecter = reject;
@@ -50,7 +57,7 @@ export class RateLimiterQueue {
     if (!this.timer) {
       const nextTryIn = Math.max(
         0,
-        this.timeLimit - (window.performance.now() - this.lastRequestTime)
+        this.timeLimit - (window.performance.now() - this.lastRequestTime),
       );
       this.timer = window.setTimeout(() => {
         this.timer = undefined;
@@ -60,52 +67,46 @@ export class RateLimiterQueue {
   }
 
   processQueue() {
-    while (this.queue.length) {
+    if (this.queue.length) {
       if (this.canProcess()) {
         const config = this.queue.shift()!;
-        config.fetcher(config.request, config.options).then(config.resolver, config.rejecter);
+        this.count++;
+        this.lastRequestTime = window.performance.now();
+        config
+          .fetcher(config.request, config.options)
+          .finally(() => {
+            this.count--;
+            this.processQueue();
+          })
+          .then(config.resolver, config.rejecter);
       } else {
         this.scheduleProcessing();
-        return;
       }
     }
   }
 
-  // Returns whether or not we can process a request right now. Mutates state.
+  // Returns whether or not we can process a request right now.
   canProcess() {
     const currentRequestTime = window.performance.now();
-
     const timeSinceLastRequest = currentRequestTime - this.lastRequestTime;
-    if (timeSinceLastRequest >= this.timeLimit) {
-      this.lastRequestTime = currentRequestTime;
-      this.count = 0;
-    }
-
-    if (this.count < this.requestLimit) {
-      this.count++;
-      return true;
-    } else {
-      return false;
-    }
+    return timeSinceLastRequest >= this.timeLimit && this.count === 0;
   }
 }
 
-export const RateLimiterConfig = {
-  limiters: [] as RateLimiterQueue[],
+const limiters: RateLimiterQueue[] = [];
 
-  addLimiter(queue: RateLimiterQueue) {
-    this.limiters.push(queue);
-  },
-};
+export function addLimiter(queue: RateLimiterQueue) {
+  limiters.push(queue);
+}
 
 /**
  * Produce a version of "fetch" that respects global rate limiting rules.
  */
 export function rateLimitedFetch(fetcher: typeof fetch): typeof fetch {
-  return (request: Request | string, options?: RequestInit) => {
-    const url = typeof request === 'string' ? request : request.url;
+  return (request: RequestInfo | URL, options?: RequestInit) => {
+    const url = request instanceof Request ? request.url : request.toString();
     let limiter;
-    for (const possibleLimiter of RateLimiterConfig.limiters) {
+    for (const possibleLimiter of limiters) {
       if (possibleLimiter.matches(url)) {
         limiter = possibleLimiter;
         break;

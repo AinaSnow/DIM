@@ -1,0 +1,646 @@
+import { SetBonusCounts } from '@destinyitemmanager/dim-api-types';
+import { MAX_STAT } from 'app/loadout/known-values';
+import { compact, filterMap } from 'app/utils/collections';
+import { BucketHashes } from 'data/d2/generated-enums';
+import { sum } from 'es-toolkit';
+import { infoLog } from '../../utils/log';
+import {
+  ArmorBucketHashes,
+  ArmorStatHashes,
+  ArmorStats,
+  artificeStatBoost,
+  DesiredStatRange,
+  majorStatBoost,
+  MinMaxStat,
+  StatRanges,
+} from '../types';
+import { getPower } from '../utils';
+import {
+  pickAndAssignSlotIndependentMods,
+  pickOptimalStatMods,
+  precalculateStructures,
+  updateMaxStats,
+} from './process-utils';
+import { encodeStatMix, HeapSetTracker } from './set-tracker';
+import {
+  AutoModData,
+  LockedProcessMods,
+  ProcessItem,
+  ProcessItemsByBucket,
+  ProcessResult,
+  ProcessStatistics,
+} from './types';
+
+/** Caps the maximum number of total armor sets that'll be returned */
+const RETURNED_ARMOR_SETS = 200;
+
+export interface ProcessInputs {
+  filteredItems: ProcessItemsByBucket;
+  /** Selected mods' total contribution to each stat */
+  modStatTotals: ArmorStats;
+  /** Mods to add onto the sets */
+  lockedMods: LockedProcessMods;
+  /** If we're requiring any set bonuses, the number of items desired from each set */
+  setBonuses: SetBonusCounts;
+  /**
+   * Required armor perks and how many items in the set must have each perk.
+   * Duplicate entries in the source perks array are collapsed into counts here.
+   */
+  requiredPerks: { hash: number; count: number }[];
+  /** The user's chosen stat ranges, in priority order. */
+  desiredStatRanges: DesiredStatRange[];
+  /** Ensure every set includes one exotic */
+  anyExotic: boolean;
+  /** Which artifice/tuning mods, large, and small stat mods are available */
+  autoModOptions: AutoModData;
+  /** Use stat mods to hit stat minimums */
+  autoStatMods: boolean;
+  /** If set, only sets where at least one stat **exceeds** `desiredStatRanges` minimums will be returned */
+  strictUpgrades: boolean;
+  /** If set, LO will exit after finding at least one set that fits all constraints (and is a strict upgrade if `strictUpgrades` is set) */
+  stopOnFirstSet: boolean;
+}
+
+/**
+ * This processes all permutations of armor to build sets
+ * @param filteredItems pared down list of items to process sets from
+ * @param modStatTotals Stats that are applied to final stat totals, think general and other mod stats
+ */
+export async function process(
+  workerNum: number,
+  {
+    filteredItems,
+    modStatTotals,
+    lockedMods,
+    setBonuses,
+    requiredPerks,
+    desiredStatRanges,
+    anyExotic,
+    autoModOptions,
+    autoStatMods,
+    strictUpgrades,
+    stopOnFirstSet,
+  }: ProcessInputs,
+  onProgress: (completed: number) => void,
+): Promise<ProcessResult> {
+  const pstart = performance.now();
+
+  // For efficiency, we'll handle most stats as flat arrays in the order the user prioritized their stats.
+  const statOrder = desiredStatRanges.map(({ statHash }): ArmorStatHashes => statHash);
+  // The maximum stat constraints for each stat
+  const maxStatConstraints = desiredStatRanges.map(({ maxStat }) => maxStat);
+  // Convert the list of stat bonuses from mods into a flat array in the same order as `statOrder`.
+  const modStatsInStatOrder = statOrder.map((h) => modStatTotals[h]);
+
+  // This stores the computed min and max value for each stat as we process all sets, so we
+  // can display it on the stat constraint editor.
+  const statRanges = statOrder.map((): MinMaxStat => ({ minStat: MAX_STAT, maxStat: 0 }));
+
+  // Precompute stat arrays for each item in stat order
+  const statsCache = new Map<ProcessItem, number[]>();
+  for (const item of ArmorBucketHashes.flatMap((h) => filteredItems[h])) {
+    statsCache.set(
+      item,
+      statOrder.map((statHash) => item.stats[statHash]),
+    );
+  }
+
+  // Each of these groups has already been reduced (in useProcess.ts) to the
+  // minimum number of items that are worth considering.
+  const helms = filteredItems[BucketHashes.Helmet];
+  const gauntlets = filteredItems[BucketHashes.Gauntlets];
+  const chests = filteredItems[BucketHashes.ChestArmor];
+  const legs = filteredItems[BucketHashes.LegArmor];
+  const classItems = filteredItems[BucketHashes.ClassArmor];
+
+  // The maximum possible combos we could possibly have
+  const combos = helms.length * gauntlets.length * chests.length * legs.length * classItems.length;
+  const numItems =
+    helms.length + gauntlets.length + chests.length + legs.length + classItems.length;
+
+  infoLog(
+    `loadout optimizer thread ${workerNum}`,
+    'Processing',
+    combos,
+    'combinations from',
+    numItems,
+    'items',
+    {
+      helms: helms.length,
+      gauntlets: gauntlets.length,
+      chests: chests.length,
+      legs: legs.length,
+      classItems: classItems.length,
+    },
+  );
+
+  const setStatistics: ProcessStatistics['statistics'] = {
+    skipReasons: {
+      doubleExotic: 0,
+      noExotic: 0,
+      skippedLowTier: 0,
+      insufficientSetBonus: 0,
+      insufficientPerks: 0,
+    },
+    lowerBoundsExceeded: { timesChecked: 0, timesFailed: 0 },
+    modsStatistics: {
+      earlyModsCheck: { timesChecked: 0, timesFailed: 0 },
+      autoModsPick: { timesChecked: 0, timesFailed: 0 },
+      finalAssignment: {
+        modAssignmentAttempted: 0,
+        modsAssignmentFailed: 0,
+        autoModsAssignmentFailed: 0,
+      },
+    },
+  };
+  const processStatistics: ProcessStatistics = {
+    numProcessed: 0,
+    numValidSets: 0,
+    statistics: setStatistics,
+  };
+
+  if (combos === 0) {
+    const statRangesFiltered = Object.fromEntries(
+      statOrder.map((h) => [h, { minStat: 0, maxStat: MAX_STAT }]),
+    ) as StatRanges;
+    return { sets: [], combos: 0, statRangesFiltered, processInfo: processStatistics };
+  }
+
+  const setTracker = new HeapSetTracker<{
+    /** The armor items in this set. */
+    armor: ProcessItem[];
+    /** The stats associated with this armor set. */
+    stats: number[];
+    mods: number[];
+    bonusStats: number[];
+  }>(RETURNED_ARMOR_SETS);
+
+  const { activityMods, generalMods } = lockedMods;
+
+  const precalculatedInfo = precalculateStructures(
+    autoModOptions,
+    generalMods,
+    activityMods,
+    autoStatMods,
+    statOrder,
+  );
+  const hasMods = Boolean(activityMods.length || generalMods.length);
+
+  const setBonusHashes = Object.keys(setBonuses).map((h) => Number(h));
+  const setBonusCounts = Object.values(setBonuses) as number[]; // TS won't figure this out itself?
+
+  interface Scheduler {
+    scheduler?: { yield: () => Promise<void> };
+  }
+
+  let yieldTask: (() => Promise<void>) | undefined = undefined;
+  if ((globalThis as unknown as Scheduler).scheduler && navigator.userAgent.includes('Firefox')) {
+    // Unlike Chrome, Firefox won't deliver postMessage until the thread yields.
+    // This relatively new API lets you yield without having to rewrite your
+    // whole loop.
+    yieldTask = () => (globalThis as unknown as Scheduler).scheduler!.yield();
+  }
+
+  let comboCount = 0;
+  // required perks' hashes
+  const perkHashes = requiredPerks.map((p) => p.hash);
+  const hasPerkReqs = requiredPerks.length > 0;
+  // count of each perk on this item, in an array w/ same order as perkHashes
+  const perkCount = (item: ProcessItem) =>
+    perkHashes.map((hash) => (item.intrinsicPerks?.includes(hash) ? 1 : 0));
+
+  // Reused across iterations to avoid per-combo allocation in this hot loop.
+  // Safe because each is only read within one iteration and copied before being
+  // stored in the set tracker.
+  const stats = [0, 0, 0, 0, 0, 0];
+  const effectiveStats = [0, 0, 0, 0, 0, 0];
+  const neededStats = [0, 0, 0, 0, 0, 0];
+  const armor: ProcessItem[] = new Array<ProcessItem>(5);
+
+  itemLoop: for (let helmIdx = 0; helmIdx < helms.length; helmIdx++) {
+    const helm = helms[helmIdx];
+    const helmExotic = Number(helm.isExotic);
+    const helmArtifice = Number(helm.isArtifice);
+    const helmWildcard = helm.hasSetBonusModSocket ? 1 : 0;
+    const helmPerks = hasPerkReqs ? perkCount(helm) : undefined;
+    const helmStats = statsCache.get(helm)!;
+    for (let gauntIdx = 0; gauntIdx < gauntlets.length; gauntIdx++) {
+      const gaunt = gauntlets[gauntIdx];
+      const gauntletExotic = Number(gaunt.isExotic);
+      const gauntArtifice = Number(gaunt.isArtifice);
+      const gauntWildcard = gaunt.hasSetBonusModSocket ? 1 : 0;
+      const gauntPerks = hasPerkReqs ? perkCount(gaunt) : undefined;
+      const gauntStats = statsCache.get(gaunt)!;
+      for (let chestIdx = 0; chestIdx < chests.length; chestIdx++) {
+        const chest = chests[chestIdx];
+        const chestExotic = Number(chest.isExotic);
+        const chestArtifice = Number(chest.isArtifice);
+        const chestWildcard = chest.hasSetBonusModSocket ? 1 : 0;
+        const chestPerks = hasPerkReqs ? perkCount(chest) : undefined;
+        const chestStats = statsCache.get(chest)!;
+        for (let legIdx = 0; legIdx < legs.length; legIdx++) {
+          const leg = legs[legIdx];
+          const legExotic = Number(leg.isExotic);
+          const legArtifice = Number(leg.isArtifice);
+          const legWildcard = leg.hasSetBonusModSocket ? 1 : 0;
+          const legPerks = hasPerkReqs ? perkCount(leg) : undefined;
+          const legStats = statsCache.get(leg)!;
+          innerloop: for (let classItemIdx = 0; classItemIdx < classItems.length; classItemIdx++) {
+            const classItem = classItems[classItemIdx];
+            comboCount++;
+            if (comboCount >= 100000) {
+              onProgress(comboCount);
+              comboCount = 0;
+              if (yieldTask) {
+                await yieldTask();
+              }
+            }
+
+            const classItemExotic = Number(classItem.isExotic);
+            const classItemArtifice = Number(classItem.isArtifice);
+            const classItemWildcard = classItem.hasSetBonusModSocket ? 1 : 0;
+            const classItemStats = statsCache.get(classItem)!;
+
+            // Check exotic constraints
+            const exoticSum =
+              classItemExotic + helmExotic + gauntletExotic + chestExotic + legExotic;
+            if (exoticSum > 1) {
+              setStatistics.skipReasons.doubleExotic += 1;
+              continue;
+            }
+            if (anyExotic && exoticSum === 0) {
+              setStatistics.skipReasons.noExotic += 1;
+              continue;
+            }
+
+            // Check required perk counts across the set
+            if (hasPerkReqs) {
+              const classItemPerks = perkCount(classItem);
+              for (let i = 0; i < requiredPerks.length; i++) {
+                const actualCount =
+                  helmPerks![i] +
+                  gauntPerks![i] +
+                  chestPerks![i] +
+                  legPerks![i] +
+                  classItemPerks[i];
+                if (actualCount < requiredPerks[i].count) {
+                  setStatistics.skipReasons.insufficientPerks++;
+                  continue innerloop;
+                }
+              }
+            }
+
+            // Set bonuses; each slot can use one wildcard if present
+            let wildcardsRemaining =
+              helmWildcard + gauntWildcard + chestWildcard + legWildcard + classItemWildcard;
+            for (let i = 0; i < setBonusHashes.length; i++) {
+              const setHash = setBonusHashes[i];
+              const setNeededCount = setBonusCounts[i];
+              const setCount =
+                Number(helm.setBonus === setHash) +
+                Number(gaunt.setBonus === setHash) +
+                Number(chest.setBonus === setHash) +
+                Number(leg.setBonus === setHash) +
+                Number(classItem.setBonus === setHash);
+              if (setCount < setNeededCount) {
+                const wildcardsNeeded = setNeededCount - setCount;
+                if (wildcardsRemaining >= wildcardsNeeded) {
+                  wildcardsRemaining -= wildcardsNeeded;
+                } else {
+                  setStatistics.skipReasons.insufficientSetBonus += 1;
+                  continue innerloop;
+                }
+              }
+            }
+
+            processStatistics.numProcessed++;
+
+            // Sum up the stats of each piece to form the overall set stats.
+            // Note that mod stats could theoretically take these negative, but
+            // none do in practice.
+            //
+            // Note: JavaScript engines apparently don't unroll loops
+            // automatically and this makes a big difference in speed.
+            stats[0] =
+              modStatsInStatOrder[0] +
+              helmStats[0] +
+              gauntStats[0] +
+              chestStats[0] +
+              legStats[0] +
+              classItemStats[0];
+            stats[1] =
+              modStatsInStatOrder[1] +
+              helmStats[1] +
+              gauntStats[1] +
+              chestStats[1] +
+              legStats[1] +
+              classItemStats[1];
+            stats[2] =
+              modStatsInStatOrder[2] +
+              helmStats[2] +
+              gauntStats[2] +
+              chestStats[2] +
+              legStats[2] +
+              classItemStats[2];
+            stats[3] =
+              modStatsInStatOrder[3] +
+              helmStats[3] +
+              gauntStats[3] +
+              chestStats[3] +
+              legStats[3] +
+              classItemStats[3];
+            stats[4] =
+              modStatsInStatOrder[4] +
+              helmStats[4] +
+              gauntStats[4] +
+              chestStats[4] +
+              legStats[4] +
+              classItemStats[4];
+            stats[5] =
+              modStatsInStatOrder[5] +
+              helmStats[5] +
+              gauntStats[5] +
+              chestStats[5] +
+              legStats[5] +
+              classItemStats[5];
+
+            // A version of the set stats that have been clamped to the max stat
+            // constraint.
+            effectiveStats[0] = Math.min(stats[0], maxStatConstraints[0]);
+            effectiveStats[1] = Math.min(stats[1], maxStatConstraints[1]);
+            effectiveStats[2] = Math.min(stats[2], maxStatConstraints[2]);
+            effectiveStats[3] = Math.min(stats[3], maxStatConstraints[3]);
+            effectiveStats[4] = Math.min(stats[4], maxStatConstraints[4]);
+            effectiveStats[5] = Math.min(stats[5], maxStatConstraints[5]);
+
+            // neededStats is the extra stats we'd need in each stat in order to
+            // hit the stat minimums, and totalNeededStats is just the sum of
+            // those. This informs the logic for deciding how to add stat mods.
+            neededStats[0] = 0;
+            neededStats[1] = 0;
+            neededStats[2] = 0;
+            neededStats[3] = 0;
+            neededStats[4] = 0;
+            neededStats[5] = 0;
+            let totalNeededStats = 0;
+
+            // Check which stats we're under the stat minimums on.
+            let totalStats = 0;
+            for (let index = 0; index < 6; index++) {
+              const filter = desiredStatRanges[index];
+              if (filter.maxStat > 0 /* non-ignored stat */) {
+                const value = effectiveStats[index];
+                // Update the minimum stat range while we're here
+                const statRange = statRanges[index];
+                if (value < statRange.minStat) {
+                  statRange.minStat = value;
+                }
+                totalStats += value;
+                if (filter.minStat > 0) {
+                  const neededValue = filter.minStat - value;
+                  if (neededValue > 0) {
+                    totalNeededStats += neededValue;
+                    neededStats[index] = neededValue;
+                  }
+                }
+              }
+            }
+
+            const numArtifice =
+              helmArtifice + gauntArtifice + chestArtifice + legArtifice + classItemArtifice;
+
+            // The most total stat points we could get from mods, assuming
+            // everything was perfectly assignable.
+            const maxModBonus =
+              numArtifice * artificeStatBoost +
+              precalculatedInfo.numAvailableGeneralMods * majorStatBoost;
+
+            // Check to see if it would be at all possible to hit the needed
+            // stat total with the best case mod bonuses. If totalNeededStats is
+            // 0 this passes trivially.
+            setStatistics.lowerBoundsExceeded.timesChecked++;
+            if (totalNeededStats > maxModBonus) {
+              setStatistics.lowerBoundsExceeded.timesFailed++;
+              continue;
+            }
+
+            armor[0] = helm;
+            armor[1] = gaunt;
+            armor[2] = chest;
+            armor[3] = leg;
+            armor[4] = classItem;
+
+            // Items that individually can't fit their slot-specific mods were
+            // filtered out before even passing them to the worker, so we only
+            // do this combined mods + auto-stats check if we need to check
+            // whether the set can fit the mods and hit target stats. This is a
+            // fast check to see if enough mods can fit to hit needed stat
+            // minimums.
+            if (
+              (hasMods || totalNeededStats > 0) &&
+              !pickAndAssignSlotIndependentMods(
+                precalculatedInfo,
+                setStatistics.modsStatistics,
+                armor,
+                totalNeededStats > 0 ? neededStats : undefined,
+                numArtifice,
+              )
+            ) {
+              // There's no way for this set to fit all requested mods while
+              // satisfying tier lower bounds, so continue on. setStatistics
+              // have been updated in pickAndAssignSlotIndependentMods.
+              continue;
+            }
+
+            // At this point we know this set satisfies all constraints.
+            // Update the max stat ranges. We need to do this before we short
+            // circuit anything so that the stat ranges are accurate.
+            const foundAnyImprovement = updateMaxStats(
+              precalculatedInfo,
+              armor,
+              stats,
+              numArtifice,
+              desiredStatRanges,
+              statRanges,
+            );
+
+            // Drop this set if it could never make it into our top
+            // RETURNED_ARMOR_SETS sets. We do this only after confirming that
+            // any required stat mods fit and updating our max tiers so that the
+            // max available tier info stays accurate.
+            if (!setTracker.couldInsert(totalStats + maxModBonus)) {
+              setStatistics.skipReasons.skippedLowTier++;
+              continue;
+            }
+
+            const optimalResult = pickOptimalStatMods(
+              precalculatedInfo,
+              armor,
+              stats,
+              desiredStatRanges,
+            );
+            if (!optimalResult) {
+              // This means we couldn't assign mods in a way that satisfied
+              // minimum stat constraints. This can happen if the mods that
+              // would be needed don't fit into the available slots.
+              setStatistics.modsStatistics.finalAssignment.modsAssignmentFailed++;
+              continue;
+            }
+
+            const { bonusStats, mods } = optimalResult;
+            const finalStats = [
+              effectiveStats[0] + bonusStats[0],
+              effectiveStats[1] + bonusStats[1],
+              effectiveStats[2] + bonusStats[2],
+              effectiveStats[3] + bonusStats[3],
+              effectiveStats[4] + bonusStats[4],
+              effectiveStats[5] + bonusStats[5],
+            ];
+            const finalTotalStats =
+              finalStats[0] +
+              finalStats[1] +
+              finalStats[2] +
+              finalStats[3] +
+              finalStats[4] +
+              finalStats[5];
+
+            // Now use our more accurate extra tiers prediction
+            if (!setTracker.couldInsert(finalTotalStats)) {
+              setStatistics.skipReasons.skippedLowTier++;
+              continue;
+            }
+
+            // Calculate the numeric stat mix for fast integer comparison.
+            // This encodes each stat value (0-200) into 8 bits, packed into a single integer.
+            // Only non-ignored stats are included, maintaining lexical ordering for priority.
+            const numericStatMix = encodeStatMix(finalStats, desiredStatRanges);
+
+            // Add on any tuning mods that were preset on the items.
+            mods.push(
+              // It's important that we keep the order of these tuning mods in
+              // the order of the armor (even when we assign mods dynamically,
+              // later), so that when we assign them in fitMostMods they get
+              // assigned to the same item. Otherwise, we could end up swapping
+              // between one balanced mod and one tuning mod, and the balanced
+              // mod's stat bonuses could be slightly different.
+              ...compact([
+                helm.includedTuningMod,
+                gaunt.includedTuningMod,
+                chest.includedTuningMod,
+                leg.includedTuningMod,
+                classItem.includedTuningMod,
+              ]),
+            );
+
+            processStatistics.numValidSets++;
+            // And now insert our set using the predicted total tier and numeric stat mix.
+            setTracker.insert({
+              enabledStatsTotal: finalTotalStats,
+              statMix: numericStatMix,
+              power: getPower(armor),
+              // Copy the reused scratch arrays since the tracker retains them.
+              armor: armor.slice(),
+              stats: stats.slice(),
+              statsTotal: sum(stats),
+              mods,
+              bonusStats,
+            });
+
+            if (stopOnFirstSet) {
+              if (strictUpgrades) {
+                if (foundAnyImprovement) {
+                  break itemLoop;
+                }
+              } else {
+                break itemLoop;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const finalSets = setTracker.getArmorSets();
+
+  const sets = filterMap(finalSets, ({ armor, stats, mods, bonusStats, ...rest }) => {
+    const armorOnlyStats: Partial<ArmorStats> = {};
+    const fullStats: Partial<ArmorStats> = {};
+
+    let hasStrictUpgrade = false;
+
+    const helmStats = statsCache.get(armor[0])!;
+    const gauntStats = statsCache.get(armor[1])!;
+    const chestStats = statsCache.get(armor[2])!;
+    const legStats = statsCache.get(armor[3])!;
+    const classItemStats = statsCache.get(armor[4])!;
+
+    for (let i = 0; i < statOrder.length; i++) {
+      const statHash = statOrder[i];
+      const value = stats[i] + bonusStats[i];
+      fullStats[statHash] = value;
+
+      const statFilter = desiredStatRanges[i];
+      if (
+        statFilter.maxStat > 0 /* enabled stat */ &&
+        strictUpgrades &&
+        statFilter.minStat < statFilter.maxStat &&
+        !hasStrictUpgrade
+      ) {
+        hasStrictUpgrade ||= value > statFilter.minStat;
+      }
+
+      armorOnlyStats[statHash] =
+        helmStats[i] + gauntStats[i] + chestStats[i] + legStats[i] + classItemStats[i];
+    }
+
+    if (strictUpgrades && !hasStrictUpgrade) {
+      return undefined;
+    }
+
+    return {
+      ...rest,
+      armor: armor.map((item) => item.id),
+      stats: fullStats as ArmorStats,
+      armorStats: armorOnlyStats as ArmorStats,
+      statMods: mods,
+    };
+  });
+
+  const totalTime = performance.now() - pstart;
+
+  infoLog(
+    `loadout optimizer thread ${workerNum}`,
+    'found',
+    processStatistics.numValidSets,
+    'stat mixes after processing',
+    combos,
+    'stat combinations in',
+    totalTime,
+    'ms - ',
+    Math.floor((combos * 1000) / totalTime),
+    'combos/s',
+    // Split into multiple objects so console.log will show them all expanded
+    'sets outright skipped:',
+    setStatistics.skipReasons,
+    'lower bounds:',
+    setStatistics.lowerBoundsExceeded,
+    'mod assignment stats:',
+    'early check:',
+    setStatistics.modsStatistics.earlyModsCheck,
+    'auto mods pick:',
+    setStatistics.modsStatistics.autoModsPick,
+    setStatistics.modsStatistics,
+  );
+
+  const statRangesFiltered = Object.fromEntries(
+    statRanges.map((h, i) => [statOrder[i], h]),
+  ) as StatRanges;
+
+  return {
+    sets,
+    combos,
+    statRangesFiltered,
+    processInfo: processStatistics,
+  };
+}

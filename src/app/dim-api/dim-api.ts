@@ -1,61 +1,66 @@
-import { unauthenticatedApi, authenticatedApi } from './dim-api-helper';
-import { DestinyAccount } from 'app/accounts/destiny-account';
 import {
+  DeleteAllResponse,
+  DestinyVersion,
+  ExportResponse,
+  GetSharedLoadoutRequest,
+  GetSharedLoadoutResponse,
+  ImportResponse,
+  Loadout,
+  LoadoutShareRequest,
+  LoadoutShareResponse,
+  PlatformInfoResponse,
   ProfileResponse,
   ProfileUpdate,
   ProfileUpdateRequest,
-  DestinyVersion,
-  ExportResponse,
-  PlatformInfoResponse,
-  ImportResponse,
   ProfileUpdateResponse,
-  AuditLogResponse,
-  DeleteAllResponse,
 } from '@destinyitemmanager/dim-api-types';
-import { DimData } from 'app/storage/sync.service';
+import { DestinyAccount } from 'app/accounts/destiny-account';
+import { authenticatedApi, unauthenticatedApi } from './dim-api-helper';
 
 export async function getGlobalSettings() {
   const response = await unauthenticatedApi<PlatformInfoResponse>(
     {
-      url: '/platform_info',
+      // This uses "app" instead of "release" because I misremembered it when implementing the server
+      url: `/platform_info?flavor=${$DIM_FLAVOR === 'release' ? 'app' : $DIM_FLAVOR}`,
       method: 'GET',
     },
-    true
+    true,
   );
   return response.settings;
 }
 
-export async function getDimApiProfile(account?: DestinyAccount) {
-  const response = await authenticatedApi<ProfileResponse>({
+export async function getDimApiProfile(account?: DestinyAccount, syncToken?: string) {
+  const params: Record<string, string> = account
+    ? {
+        platformMembershipId: account.membershipId,
+        destinyVersion: account.destinyVersion.toString(),
+        components: 'settings,loadouts,tags,hashtags,searches,triumphs',
+      }
+    : {
+        components: 'settings',
+      };
+  if (syncToken) {
+    params.sync = syncToken;
+  }
+  return authenticatedApi<ProfileResponse>({
     url: '/profile',
     method: 'GET',
-    params: account
-      ? {
-          platformMembershipId: account.membershipId,
-          destinyVersion: account.destinyVersion,
-          // TODO: triumphs
-          components: 'settings,loadouts,tags,hashtags,searches',
-        }
-      : {
-          components: 'settings',
-        },
+    params,
   });
-  return response;
 }
 
-export async function importData(data: DimData) {
-  const response = await authenticatedApi<ImportResponse>({
+export async function importData(data: ExportResponse) {
+  return authenticatedApi<ImportResponse>({
     url: '/import',
     method: 'POST',
     body: data,
   });
-  return response;
 }
 
 export async function postUpdates(
   platformMembershipId: string | undefined,
   destinyVersion: DestinyVersion | undefined,
-  updates: ProfileUpdate[]
+  updates: ProfileUpdate[],
 ) {
   // Strip properties
   updates = updates.map((u) => ({ action: u.action, payload: u.payload })) as ProfileUpdate[];
@@ -78,12 +83,29 @@ export async function postUpdates(
   return response.results;
 }
 
-export async function getAuditLog() {
-  const response = await authenticatedApi<AuditLogResponse>({
-    url: '/audit',
-    method: 'GET',
+export async function createLoadoutShare(platformMembershipId: string, loadout: Loadout) {
+  const request: LoadoutShareRequest = {
+    platformMembershipId,
+    loadout,
+  };
+  const response = await authenticatedApi<LoadoutShareResponse>({
+    url: '/loadout_share',
+    method: 'POST',
+    body: request,
   });
-  return response.log;
+  return response.shareUrl;
+}
+
+export async function getSharedLoadout(shareId: string) {
+  const params = {
+    shareId,
+  } satisfies GetSharedLoadoutRequest;
+  const response = await unauthenticatedApi<GetSharedLoadoutResponse>({
+    url: '/loadout_share',
+    method: 'GET',
+    params,
+  });
+  return response.loadout;
 }
 
 export async function deleteAllData() {
@@ -95,9 +117,8 @@ export async function deleteAllData() {
 }
 
 export async function exportDimApiData() {
-  const response = await authenticatedApi<ExportResponse>({
+  return authenticatedApi<ExportResponse>({
     url: '/export',
     method: 'GET',
   });
-  return response;
 }

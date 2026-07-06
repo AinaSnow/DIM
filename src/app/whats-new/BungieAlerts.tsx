@@ -1,44 +1,41 @@
 import { t } from 'app/i18next-t';
-import React, { useState } from 'react';
-import { getGlobalAlerts, GlobalAlert } from '../bungie-api/bungie-core-api';
-import './BungieAlerts.scss';
-import { deepEqual } from 'fast-equals';
+import { bungieHelpAccount, bungieHelpLink } from 'app/shell/links';
+import { bungieAlertsSelector } from 'app/shell/selectors';
+import { GlobalAlertLevel } from 'bungie-api-ts/core';
+import { useSelector } from 'react-redux';
 import ExternalLink from '../dim-ui/ExternalLink';
-import { timer, from, empty } from 'rxjs';
-import {
-  switchMap,
-  startWith,
-  distinctUntilChanged,
-  shareReplay,
-  catchError,
-} from 'rxjs/operators';
-import { useSubscription } from 'app/utils/hooks';
+import * as styles from './BungieAlerts.m.scss';
 
-export const alerts$ = timer(0, 10 * 60 * 1000).pipe(
-  // Fetch global alerts, but swallow errors
-  switchMap(() => from(getGlobalAlerts()).pipe(catchError((_err) => empty()))),
-  startWith([] as GlobalAlert[]),
-  // Deep equals
-  distinctUntilChanged<GlobalAlert[]>(deepEqual),
-  shareReplay()
-);
+// http://destinydevs.github.io/BungieNetPlatform/docs/Enums
+export const GlobalAlertLevelsToToastLevels = [
+  'info', // Unknown
+  'info', // Blue
+  'warn', // Yellow
+  'error', // Red
+];
+
+const AlertLevelStyles = {
+  [GlobalAlertLevel.Unknown]: styles.info,
+  [GlobalAlertLevel.Blue]: styles.info,
+  [GlobalAlertLevel.Yellow]: styles.warn,
+  [GlobalAlertLevel.Red]: styles.error,
+};
 
 /**
  * Displays maintenance alerts from Bungie.net.
  */
 export default function BungieAlerts() {
-  const [alerts, setAlerts] = useState<GlobalAlert[]>([]);
-  useSubscription(() => alerts$.subscribe(setAlerts));
+  const alerts = useSelector(bungieAlertsSelector);
 
   return (
-    <div className="bungie-alerts">
+    <div>
       {alerts.map((alert) => (
-        <div key={alert.key} className={`bungie-alert bungie-alert-${alert.type}`}>
-          <b>{t('BungieAlert.Title')}</b>
-          <p dangerouslySetInnerHTML={{ __html: alert.body }} />
+        <div key={alert.AlertKey} className={AlertLevelStyles[alert.AlertLevel]}>
+          <h2>{t('BungieAlert.Title')}</h2>
+          <p dangerouslySetInnerHTML={{ __html: alert.AlertHtml }} />
           <div>
             {t('BungieService.Twitter')}{' '}
-            <ExternalLink href="http://twitter.com/BungieHelp">@BungieHelp Twitter</ExternalLink>
+            <ExternalLink href={bungieHelpLink}>{bungieHelpAccount}</ExternalLink>
           </div>
         </div>
       ))}

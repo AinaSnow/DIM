@@ -1,5 +1,4 @@
-import _ from 'lodash';
-import { BehaviorSubject } from 'rxjs';
+import { Observable } from 'app/utils/observable';
 
 const localStorageKey = 'dim-changelog-viewed-version';
 
@@ -9,7 +8,7 @@ class Versions {
   previousVersion = cleanVersion(localStorage.getItem(localStorageKey));
 
   /** An observable for whether to show the changelog. */
-  showChangelog$ = new BehaviorSubject(this.showChangelog);
+  showChangelog$ = new Observable(this.showChangelog);
 
   /**
    * Signify that the changelog page has been viewed.
@@ -46,7 +45,7 @@ class Versions {
 // Clean out Beta versions to ignore their build number.
 function cleanVersion(version: string | null) {
   if (version) {
-    return _.take(version.split('.'), 3).join('.');
+    return version.split('.').slice(0, 3).join('.');
   }
   return version;
 }
@@ -55,7 +54,7 @@ function splitVersion(version: string): number[] {
   return version.split('.').map((s) => parseInt(s, 10));
 }
 
-export function compareVersions(version1: string, version2: string) {
+function compareVersions(version1: string, version2: string) {
   const v1 = splitVersion(version1);
   const v2 = splitVersion(version2);
 

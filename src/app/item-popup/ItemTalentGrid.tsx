@@ -1,45 +1,24 @@
-import React from 'react';
-import { DimGridNode, D1GridNode, DimItem } from '../inventory/item-types';
-import _ from 'lodash';
+import { percent } from 'app/shell/formatters';
+import { maxOf } from 'app/utils/collections';
 import clsx from 'clsx';
-import PressTip from '../dim-ui/PressTip';
+import { memo } from 'react';
 import { bungieNetPath } from '../dim-ui/BungieImage';
-import './ItemTalentGrid.scss';
-import { ratePerks } from '../destinyTrackerApi/perkRater';
-import { connect } from 'react-redux';
-import { RootState } from 'app/store/types';
-import { getReviews } from '../item-review/reducer';
-import { D1ItemUserReview } from '../item-review/d1-dtr-api-types';
-import { emptySet, emptyArray } from 'app/utils/empty';
+import { PressTip, Tooltip } from '../dim-ui/PressTip';
+import { D1GridNode, D1Item } from '../inventory/item-types';
+import * as styles from './ItemTalentGrid.m.scss';
 
-interface ProvidedProps {
-  item: DimItem;
+/**
+ * The talent grid was the grid of perks for D1 items. It is not used for any D2 item.
+ */
+export default memo(function ItemTalentGrid({
+  item,
+  perksOnly,
+  className,
+}: {
+  item: D1Item;
+  className?: string;
   perksOnly?: boolean;
-}
-
-interface StoreProps {
-  bestPerks: Set<number>;
-}
-
-function mapStateToProps(state: RootState, { item }: ProvidedProps): StoreProps {
-  // TODO: selector!
-  const reviewResponse = $featureFlags.reviewsEnabled ? getReviews(item, state) : undefined;
-  const reviews = reviewResponse ? reviewResponse.reviews : emptyArray();
-  const bestPerks =
-    $featureFlags.reviewsEnabled && item.isDestiny1()
-      ? ratePerks(item, reviews as D1ItemUserReview[])
-      : emptySet<number>();
-  return {
-    bestPerks,
-  };
-}
-
-type Props = ProvidedProps & StoreProps;
-
-// TODO: There's enough here to make a decent D2 talent grid for subclasses: https://imgur.com/a/3wNRq
-function ItemTalentGrid({ item, perksOnly, bestPerks }: Props) {
-  // TODO: useEffect to dispatch review load
-
+}) {
   const talentGrid = item.talentGrid;
 
   if (!talentGrid) {
@@ -62,18 +41,19 @@ function ItemTalentGrid({ item, perksOnly, bestPerks }: Props) {
   }
 
   const visibleNodes = talentGrid.nodes.filter((n) => !n.hidden);
-  const numColumns = _.maxBy(visibleNodes, (n) => n.column)!.column + 1 - hiddenColumns;
-  const numRows = perksOnly ? 2 : _.maxBy(visibleNodes, (n) => n.row)!.row + 1;
+  const numColumns = maxOf(visibleNodes, (n) => n.column) + 1 - hiddenColumns;
+  const numRows = maxOf(visibleNodes, (n) => n.row) + 1;
+
+  const height = (numRows * totalNodeSize - nodePadding) * scaleFactor;
+  const width = (numColumns * totalNodeSize - nodePadding) * scaleFactor;
 
   return (
     <svg
       preserveAspectRatio="xMaxYMin meet"
-      viewBox={`0 0 ${(numColumns * totalNodeSize - nodePadding) * scaleFactor} ${
-        (numRows * totalNodeSize - nodePadding) * scaleFactor + 1
-      }`}
-      className="talent-grid"
-      height={(numRows * totalNodeSize - nodePadding) * scaleFactor}
-      width={(numColumns * totalNodeSize - nodePadding) * scaleFactor}
+      viewBox={`0 0 ${width} ${height}`}
+      className={clsx(styles.talentGrid, className)}
+      height={height}
+      width={width}
     >
       <g transform={`scale(${scaleFactor})`}>
         {talentGridNodesFilter(talentGrid.nodes, hiddenColumns).map((node) => (
@@ -82,7 +62,7 @@ function ItemTalentGrid({ item, perksOnly, bestPerks }: Props) {
             key={node.hash}
             tooltip={
               <>
-                <h2>{node.name}</h2>
+                <Tooltip.Header text={node.name} />
                 <div>{node.description}</div>
               </>
             }
@@ -91,32 +71,24 @@ function ItemTalentGrid({ item, perksOnly, bestPerks }: Props) {
               transform={`translate(${(node.column - hiddenColumns) * totalNodeSize},${
                 node.row * totalNodeSize
               })`}
-              className={clsx('talent-node', {
-                'talent-node-activated': node.activated,
-                'talent-node-showxp': isD1GridNode(node) && !node.activated && node.xpRequired,
-                'talent-node-default':
-                  node.activated &&
-                  (!isD1GridNode(node) || !node.xpRequired) &&
-                  !node.exclusiveInColumn &&
-                  node.column < 1,
+              className={clsx({
+                [styles.activated]: node.activated,
+                [styles.showXp]: !node.activated && node.xpRequired,
+                [styles.defaultOption]:
+                  node.activated && !node.xpRequired && !node.exclusiveInColumn && node.column < 1,
               })}
             >
-              {isD1GridNode(node) && bestPerks.has(node.hash) && !node.activated && (
-                <circle className="talent-node-best-rated-circle" r="5" cx="30" cy="5" />
-              )}
               <circle
                 r="16"
                 cx="-17"
                 cy="17"
                 transform="rotate(-90)"
-                className="talent-node-xp"
-                strokeWidth={isD1GridNode(node) && node.xp ? 2 : 0}
-                strokeDasharray={
-                  isD1GridNode(node) ? `${(100 * node.xp) / node.xpRequired} 100` : undefined
-                }
+                className={styles.nodeXp}
+                strokeWidth={node.xp ? 2 : 0}
+                strokeDasharray={`${percent(node.xp / node.xpRequired)} 100`}
               />
               <image
-                className="talent-node-img"
+                className={styles.nodeImg}
                 href={bungieNetPath(node.icon)}
                 x="20"
                 y="20"
@@ -124,24 +96,14 @@ function ItemTalentGrid({ item, perksOnly, bestPerks }: Props) {
                 width="96"
                 transform="scale(0.25)"
               />
-              <title>
-                {node.name}&#10;{node.description}
-              </title>
             </g>
           </PressTip>
         ))}
       </g>
     </svg>
   );
-}
+});
 
-function talentGridNodesFilter(nodes: DimGridNode[], hiddenColumns: number) {
+function talentGridNodesFilter(nodes: D1GridNode[], hiddenColumns: number) {
   return (nodes || []).filter((node) => !node.hidden && node.column >= hiddenColumns);
 }
-
-function isD1GridNode(node: DimGridNode): node is D1GridNode {
-  const d1Node = node as D1GridNode;
-  return Boolean(d1Node.xp || d1Node.xpRequired || d1Node.xpRequirementMet);
-}
-
-export default connect<StoreProps>(mapStateToProps)(ItemTalentGrid);

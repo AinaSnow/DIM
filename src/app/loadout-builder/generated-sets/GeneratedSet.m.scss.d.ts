@@ -2,8 +2,8 @@
 // Please do not change this file!
 interface CssExports {
   'build': string;
-  'header': string;
+  'container': string;
   'items': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

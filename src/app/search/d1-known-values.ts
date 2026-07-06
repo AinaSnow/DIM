@@ -2,20 +2,19 @@
 // this file has non-programatically decided information
 // hashes, names, & enums, hand-crafted and chosen by us
 
+import { BucketHashes, ItemCategoryHashes, StatHashes } from 'data/d2/generated-enums';
+
 //
 // STATS KNOWN VALUES
 //
 
-/** hashes representing D1 PL stats */
-export const D1LightStats = [
-  3897883278, // Defense
-  368428387, // Attack
-];
-
 export const enum D1_StatHashes {
-  Defense = 3897883278,
-  Attack = 368428387,
+  Defense = StatHashes.Defense, // Same as in D2
+  Attack = 368428387, // Not the same as in D2
 }
+
+/** hashes representing D1 PL stats */
+export const D1LightStats = [D1_StatHashes.Defense, D1_StatHashes.Attack];
 
 /** hashes representing D1 Progressions */
 export const enum D1ProgressionHashes {
@@ -23,23 +22,35 @@ export const enum D1ProgressionHashes {
 }
 
 //
-// ITEMS / ITEMCATERGORY KNOWN VALUES
+// ITEMS / ITEM CATEGORY KNOWN VALUES
 //
 
 /** these weapons exist in D1&2 */
 export const D1ItemCategoryHashes = {
-  autorifle: 5,
-  handcannon: 6,
-  pulserifle: 7,
-  scoutrifle: 8,
-  fusionrifle: 9,
-  sniperrifle: 10,
-  shotgun: 11,
-  machinegun: 12,
-  rocketlauncher: 13,
-  sidearm: 14,
-  sword: 54,
+  autorifle: ItemCategoryHashes.AutoRifle,
+  handcannon: ItemCategoryHashes.HandCannon,
+  pulserifle: ItemCategoryHashes.PulseRifle,
+  scoutrifle: ItemCategoryHashes.ScoutRifle,
+  fusionrifle: ItemCategoryHashes.FusionRifle,
+  sniperrifle: ItemCategoryHashes.SniperRifle,
+  shotgun: ItemCategoryHashes.Shotgun,
+  machinegun: ItemCategoryHashes.MachineGun,
+  rocketlauncher: ItemCategoryHashes.RocketLauncher,
+  sidearm: ItemCategoryHashes.Sidearm,
+  sword: ItemCategoryHashes.Sword,
 };
+
+export const enum D1BucketHashes {
+  Artifact = 434908299,
+  RecordBook = 2987185182,
+  RecordBookLegacy = 549485690,
+  Missions = BucketHashes.Engrams, // D1 missions are D2 engrams
+  Quests = 1801258597,
+  Bounties = 2197472680,
+  Shader = 2973005342,
+  Horn = 3796357825,
+  D1Emotes = 3054419239,
+}
 
 //
 // OTHER STUFF
@@ -74,7 +85,7 @@ export const supplies = [
 ];
 
 /** for D1 items: used to calculate which vendor an item could have come from */
-export const vendorHashes = {
+export const vendorHashes: Record<'required' | 'restricted', NodeJS.Dict<number[]>> = {
   required: {
     fwc: [995344558], // SOURCE_VENDOR_FUTURE_WAR_CULT / Future War Cult
     do: [103311758], // SOURCE_VENDOR_DEAD_ORBIT / Dead Orbit
@@ -103,7 +114,14 @@ export const vendorHashes = {
 /** for D1 items: used to calculate which activity an item could have come from
  * "vanilla" has no hash but checks for year == 1
  */
-export const D1ActivityHashes = {
+export const D1ActivityHashes: {
+  restricted: {
+    [keyword: string]: number[] | undefined;
+  };
+  required: {
+    [keyword: string]: number[] | undefined;
+  };
+} = {
   required: {
     trials: [2650556703], // SOURCE_TRIALS_OF_OSIRIS / Trials
     ib: [1322283879], // SOURCE_IRON_BANNER / Iron Banner
@@ -118,7 +136,7 @@ export const D1ActivityHashes = {
     wotm: [4160622434], // SOURCE_WRATH_OF_THE_MACHINE / Wrath of the Machine
     poe: [2784812137], // SOURCE_PRISON_ELDERS / Prison of Elders
     coe: [1537575125], // SOURCE_POE_ELDER_CHALLENGE / Challenge of Elders
-    af: [3667653533], // SOURCE_ARCHON_FORGE / Archon Forge
+    af: [3667653533], // SOURCE_ARCHONS_FORGE / Archons Forge
     dawning: [3131490494], // SOURCE_DAWNING /
     aot: [3068521220, 4161861381, 440710167], // SOURCE_AGES_OF_TRIUMPH && SOURCE_RAID_REPRISE
   },

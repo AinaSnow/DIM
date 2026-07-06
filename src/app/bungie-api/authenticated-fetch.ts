@@ -1,19 +1,19 @@
-import { getAccessTokenFromRefreshToken } from './oauth';
-import {
-  Tokens,
-  removeToken,
-  setToken,
-  getToken,
-  hasTokenExpired,
-  removeAccessToken,
-} from './oauth-tokens';
-import { PlatformErrorCodes } from 'bungie-api-ts/user';
 import { t } from 'app/i18next-t';
-import store from 'app/store/store';
-import { loggedOut } from 'app/accounts/actions';
-import _ from 'lodash';
+import { infoLog, warnLog } from 'app/utils/log';
+import { PlatformErrorCodes } from 'bungie-api-ts/user';
+import { HttpStatusError } from './http-client';
+import { getAccessTokenFromRefreshToken } from './oauth';
+import { Tokens, getToken, hasTokenExpired, removeAccessToken } from './oauth-tokens';
 
-let cache: Promise<Tokens> | null = null;
+/**
+ * A fatal token error means we have to log in again.
+ */
+export class FatalTokenError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'FatalTokenError';
+  }
+}
 
 /**
  * A wrapper around "fetch" that implements Bungie's OAuth scheme. This either
@@ -21,11 +21,11 @@ let cache: Promise<Tokens> | null = null;
  * or bounces us back to login.
  */
 export async function fetchWithBungieOAuth(
-  request: Request | string,
+  request: RequestInfo | URL,
   options?: RequestInit,
-  triedRefresh = false
+  triedRefresh = false,
 ): Promise<Response> {
-  if (typeof request === 'string') {
+  if (!(request instanceof Request)) {
     request = new Request(request);
   }
 
@@ -33,11 +33,8 @@ export async function fetchWithBungieOAuth(
     const token = await getActiveToken();
     request.headers.set('Authorization', `Bearer ${token.accessToken.value}`);
   } catch (e) {
-    // Note: instanceof doesn't work due to a babel bug:
-    if (e.name === 'FatalTokenError') {
-      console.warn('Unable to get auth token, clearing auth tokens & going to login: ', e);
-      removeToken();
-      goToLoginPage();
+    if (e instanceof FatalTokenError) {
+      warnLog('bungie auth', 'Unable to get auth token', e);
     }
     throw e;
   }
@@ -47,13 +44,13 @@ export async function fetchWithBungieOAuth(
   if (await responseIndicatesBadToken(response)) {
     if (triedRefresh) {
       // Give up
-      removeToken();
-      goToLoginPage();
-      throw new Error("Access token expired, and we've already tried to refresh. Failing.");
+      throw new FatalTokenError(
+        "Access token expired, and we've already tried to refresh. Failing.",
+      );
     }
     // OK, Bungie has told us our access token is expired or
     // invalid. Refresh it and try again.
-    console.log(`Access token expired, removing access token and trying again`);
+    infoLog('bungie auth', 'Access token expired, removing access token and trying again');
     removeAccessToken();
     return fetchWithBungieOAuth(request, options, true);
   }
@@ -62,44 +59,29 @@ export async function fetchWithBungieOAuth(
 }
 
 async function responseIndicatesBadToken(response: Response) {
-  // https://github.com/Bungie-net/api/issues/1151: D1 endpoints have a bug where they can return 401 if you've logged in via Stadia.
-  // This hack prevents a login loop
-  if (/\/D1\/Platform\/Destiny\/\d+\/Account\/\d+\/$/.test(response.url)) {
-    return false;
-  }
-
   if (response.status === 401) {
     return true;
   }
-  const data = await response.clone().json();
-  return (
-    data &&
-    (data.ErrorCode === PlatformErrorCodes.AccessTokenHasExpired ||
-      data.ErrorCode === PlatformErrorCodes.WebAuthRequired ||
-      // (also means the access token has expired)
-      data.ErrorCode === PlatformErrorCodes.WebAuthModuleAsyncFailed ||
-      data.ErrorCode === PlatformErrorCodes.AuthorizationRecordRevoked ||
-      data.ErrorCode === PlatformErrorCodes.AuthorizationRecordExpired ||
-      data.ErrorCode === PlatformErrorCodes.AuthorizationCodeStale ||
-      data.ErrorCode === PlatformErrorCodes.AuthorizationCodeInvalid)
-  );
-}
-
-/**
- * A fatal token error means we have to log in again.
- */
-export class FatalTokenError extends Error {
-  constructor(msg) {
-    super(msg);
-    this.name = 'FatalTokenError';
-  }
+  try {
+    const data = (await response.clone().json()) as { ErrorCode: PlatformErrorCodes } | undefined;
+    return Boolean(
+      data &&
+      (data.ErrorCode === PlatformErrorCodes.AccessTokenHasExpired ||
+        data.ErrorCode === PlatformErrorCodes.WebAuthRequired ||
+        // (also means the access token has expired)
+        data.ErrorCode === PlatformErrorCodes.WebAuthModuleAsyncFailed ||
+        data.ErrorCode === PlatformErrorCodes.AuthorizationRecordRevoked ||
+        data.ErrorCode === PlatformErrorCodes.AuthorizationRecordExpired ||
+        data.ErrorCode === PlatformErrorCodes.AuthorizationCodeStale ||
+        data.ErrorCode === PlatformErrorCodes.AuthorizationCodeInvalid),
+    );
+  } catch {}
+  return false;
 }
 
 export async function getActiveToken(): Promise<Tokens> {
-  let token = getToken();
+  const token = getToken();
   if (!token) {
-    removeToken();
-    goToLoginPage();
     throw new FatalTokenError('No auth token exists, redirect to login');
   }
 
@@ -111,83 +93,96 @@ export async function getActiveToken(): Promise<Tokens> {
   // Get a new token from refresh token
   const refreshTokenIsValid = token && !hasTokenExpired(token.refreshToken);
   if (!refreshTokenIsValid) {
-    removeToken();
-    goToLoginPage();
     throw new FatalTokenError('Refresh token invalid, clearing auth tokens & going to login');
   }
 
   try {
-    token = await (cache || getAccessTokenFromRefreshToken(token.refreshToken!));
-    setToken(token);
-    console.log('Successfully updated auth token from refresh token.');
-    return token;
+    return await getAccessTokenFromRefreshToken(token.refreshToken!);
   } catch (e) {
     return handleRefreshTokenError(e);
-  } finally {
-    cache = null;
   }
 }
 
-async function handleRefreshTokenError(response: Error | Response): Promise<Tokens> {
-  if (response instanceof TypeError) {
-    console.warn(
+function handleRefreshTokenError(error: unknown): Promise<Tokens> {
+  if (error instanceof TypeError) {
+    warnLog(
+      'bungie auth',
       "Error getting auth token from refresh token because there's no internet connection (or a permissions issue). Not clearing token.",
-      response
+      error,
     );
-    throw response;
+    throw error;
   }
-  if (response instanceof Error) {
-    console.warn(
+  if (!(error instanceof HttpStatusError)) {
+    warnLog(
+      'bungie auth',
       'Other error getting auth token from refresh token. Not clearing auth tokens',
-      response
+      error,
     );
-    throw response;
+    throw error;
   }
-  switch (response.status) {
+  let data;
+  if (error.responseBody) {
+    try {
+      data = JSON.parse(error.responseBody) as {
+        error?: string;
+        error_description?: string;
+        ErrorCode?: PlatformErrorCodes;
+      };
+    } catch {}
+  }
+
+  if (data) {
+    if (data.error === 'server_error') {
+      switch (data.error_description) {
+        case 'SystemDisabled':
+          throw new Error(t('BungieService.Maintenance'));
+        case 'RefreshTokenNotYetValid':
+        case 'AccessTokenHasExpired':
+        case 'AuthorizationCodeInvalid':
+        case 'AuthorizationRecordExpired':
+        case 'AuthorizationRecordRevoked':
+        case 'AuthorizationCodeStale':
+          throw new FatalTokenError(
+            `Refresh token expired or not valid, platform error ${data.error_description}`,
+          );
+        default:
+          throw new Error(
+            `Unknown error getting response token: ${data.error}, ${data.error_description}`,
+          );
+      }
+    }
+
+    if (data.ErrorCode) {
+      switch (data.ErrorCode) {
+        case PlatformErrorCodes.RefreshTokenNotYetValid:
+        case PlatformErrorCodes.AccessTokenHasExpired:
+        case PlatformErrorCodes.AuthorizationCodeInvalid:
+        case PlatformErrorCodes.AuthorizationRecordExpired:
+        case PlatformErrorCodes.AuthorizationRecordRevoked:
+        case PlatformErrorCodes.AuthorizationCodeStale:
+          throw new FatalTokenError(
+            `Refresh token expired or not valid, platform error ${data.ErrorCode}`,
+          );
+        default:
+          break;
+      }
+    }
+  }
+
+  switch (error.status) {
     case -1:
       throw new Error(
-        "Error getting auth token from refresh token because there's no internet connection. Not clearing token."
+        "Error getting auth token from refresh token because there's no internet connection. Not clearing token.",
       );
-    case 400:
     case 401:
     case 403: {
-      let data;
-      try {
-        data = await response.json();
-      } catch (e) {}
-      if (data?.error === 'server_error') {
-        if (data.error_description === 'SystemDisabled') {
-          throw new Error(t('BungieService.Maintenance'));
-        } else {
-          throw new Error(
-            `Unknown error getting response token: ${data.error}, ${data.error_description}`
-          );
-        }
-      }
-      throw new FatalTokenError('Refresh token expired or not valid, status ' + response.status);
-    }
-    default: {
-      try {
-        const data = await response.json();
-        if (data?.ErrorCode) {
-          switch (data.ErrorCode) {
-            case PlatformErrorCodes.RefreshTokenNotYetValid:
-            case PlatformErrorCodes.AccessTokenHasExpired:
-            case PlatformErrorCodes.AuthorizationCodeInvalid:
-              throw new FatalTokenError(
-                'Refresh token expired or not valid, platform error ' + data.ErrorCode
-              );
-          }
-        }
-      } catch (e) {
-        throw new Error("Error response wasn't json: " + e.message);
-      }
+      throw new FatalTokenError(`Refresh token expired or not valid, status ${error.status}`);
     }
   }
-  throw new Error('Unknown error getting response token: ' + response);
-}
 
-export function goToLoginPage() {
-  // TODO: pass in dispatch
-  store.dispatch(loggedOut());
+  throw new Error(
+    `Unknown error getting response token. status: ${error.status}, response: ${
+      error.responseBody ?? 'No response body'
+    }`,
+  );
 }

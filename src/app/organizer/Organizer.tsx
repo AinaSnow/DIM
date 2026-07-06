@@ -1,81 +1,127 @@
-/* eslint-disable react/jsx-key, react/prop-types */
-import React, { useEffect, useState } from 'react';
-import { connect } from 'react-redux';
-import { RootState } from 'app/store/types';
-import { D2StoresService } from 'app/inventory/d2-stores';
 import { DestinyAccount } from 'app/accounts/destiny-account';
-import { useSubscription } from 'app/utils/hooks';
-import { queueAction } from 'app/inventory/action-queue';
-import { refresh$ } from 'app/shell/refresh';
-import { storesSelector } from 'app/inventory/selectors';
-import ItemTypeSelector, { ItemCategoryTreeNode } from './ItemTypeSelector';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import ErrorBoundary from 'app/dim-ui/ErrorBoundary';
-import ItemTable from './ItemTable';
-import { DimStore } from 'app/inventory/store-types';
-import Compare from 'app/compare/Compare';
-import styles from './Organizer.m.scss';
-import { t } from 'app/i18next-t';
 import ShowPageLoading from 'app/dim-ui/ShowPageLoading';
-import { D1ManifestDefinitions } from 'app/destiny1/d1-definitions';
-import { destinyVersionSelector } from 'app/accounts/selectors';
-import { D1StoresService } from 'app/inventory/d1-stores';
+import { t } from 'app/i18next-t';
+import { useLoadStores } from 'app/inventory/store/hooks';
+import { setSearchQuery } from 'app/shell/actions';
+import { querySelector, useIsPhonePortrait } from 'app/shell/selectors';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { usePageTitle } from 'app/utils/hooks';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
+import { useEffect, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import { useLocation, useNavigate } from 'react-router';
+import ItemTable from './ItemTable';
+import ItemTypeSelector, { ItemCategoryTreeNode, getSelectionTree } from './ItemTypeSelector';
+import * as styles from './Organizer.m.scss';
 
-interface ProvidedProps {
+interface Props {
   account: DestinyAccount;
 }
 
-interface StoreProps {
-  stores: DimStore[];
-  defs: D2ManifestDefinitions | D1ManifestDefinitions;
-  isPhonePortrait: boolean;
-}
+/**
+ * Given a tree of item categories, and a flat list of item category hashes that
+ * describe a path through that tree, return the nodes from the tree along that
+ * path.
+ */
+function drillToSelection(
+  selectionTree: ItemCategoryTreeNode | undefined,
+  selectedItemCategoryHashes: ItemCategoryHashes[],
+): ItemCategoryTreeNode[] {
+  const selectedItemCategoryHash = selectedItemCategoryHashes[0];
 
-function mapStateToProps() {
-  return (state: RootState): StoreProps => ({
-    defs:
-      destinyVersionSelector(state) === 2 ? state.manifest.d2Manifest! : state.manifest.d1Manifest!,
-    stores: storesSelector(state),
-    isPhonePortrait: state.shell.isPhonePortrait,
-  });
-}
-
-type Props = ProvidedProps & StoreProps;
-
-function getStoresService(account: DestinyAccount) {
-  return account.destinyVersion === 1 ? D1StoresService : D2StoresService;
-}
-
-function Organizer({ account, defs, stores, isPhonePortrait }: Props) {
-  useEffect(() => {
-    if (!stores.length) {
-      getStoresService(account).getStoresStream(account);
-    }
-  });
-
-  useSubscription(() =>
-    refresh$.subscribe(() => queueAction(() => getStoresService(account).reloadStores()))
-  );
-
-  const [selection, onSelection] = useState<ItemCategoryTreeNode[]>([]);
-
-  if (isPhonePortrait) {
-    return <div>{t('Organizer.NoMobile')}</div>;
+  if (
+    !selectionTree ||
+    selectedItemCategoryHash === undefined ||
+    selectionTree.itemCategoryHash !== selectedItemCategoryHash
+  ) {
+    return [];
   }
 
-  if (!stores.length) {
+  if (selectionTree.subCategories && selectedItemCategoryHashes.length) {
+    for (const category of selectionTree.subCategories) {
+      const subselection = drillToSelection(category, selectedItemCategoryHashes.slice(1));
+      if (subselection.length) {
+        return [selectionTree, ...subselection];
+      }
+    }
+  }
+
+  return [selectionTree];
+}
+
+export default function Organizer({ account }: Props) {
+  usePageTitle(t('Organizer.Organizer'));
+  const dispatch = useThunkDispatch();
+  const isPhonePortrait = useIsPhonePortrait();
+  const searchQuery = useSelector(querySelector);
+  const storesLoaded = useLoadStores(account);
+
+  const navigate = useNavigate();
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  // Get selected categories from URL
+  const selectedItemCategoryHashes = [
+    0,
+    ...(params.get('category') || '').split('~').map((s) => parseInt(s, 10) || 0),
+  ];
+  const types = getSelectionTree(account.destinyVersion);
+  const selection = drillToSelection(types, selectedItemCategoryHashes);
+
+  // TODO: useSearchParams?
+  // On the first render, apply the search from the query params if possible. Otherwise,
+  // update the query params with the current search.
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (!firstRender.current) {
+      searchQuery ? params.set('search', searchQuery) : params.delete('search');
+      navigate(
+        {
+          ...location,
+          search: params.toString(),
+        },
+        { replace: true },
+      );
+    } else if (params.has('search') && searchQuery !== params.get('search')) {
+      dispatch(setSearchQuery(params.get('search')!));
+    }
+    firstRender.current = false;
+
+    // We only want to do this when the search query changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
+
+  // When new item categories are selected, set the URL to the new selection, and
+  // allow the URL to set the state. The URL is our state store, and this means
+  // it's easy to link to a selection or preserve state across reloads.
+  const onSelection = (selection: ItemCategoryTreeNode[]) => {
+    params.set(
+      'category',
+      selection
+        .slice(1)
+        .map((s) => s.itemCategoryHash)
+        .join('~'),
+    );
+    navigate(
+      {
+        ...location,
+        search: params.toString(),
+      },
+      { replace: true },
+    );
+  };
+
+  if (isPhonePortrait) {
+    return <div className={styles.noMobile}>{t('Organizer.NoMobile')}</div>;
+  }
+
+  if (!storesLoaded) {
     return <ShowPageLoading message={t('Loading.Profile')} />;
   }
 
   return (
     <div className={styles.organizer}>
-      <ErrorBoundary name="Organizer">
-        <ItemTypeSelector defs={defs} selection={selection} onSelection={onSelection} />
-        <ItemTable categories={selection} />
-        <Compare />
-      </ErrorBoundary>
+      <ItemTypeSelector selection={selection} selectionTree={types} onSelection={onSelection} />
+      <ItemTable categories={selection} />
     </div>
   );
 }
-
-export default connect<StoreProps>(mapStateToProps)(Organizer);

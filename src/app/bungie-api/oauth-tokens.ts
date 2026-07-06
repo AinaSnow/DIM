@@ -23,7 +23,7 @@ export interface Tokens {
  * This service manages storage and management of saved OAuth
  * authorization and refresh tokens.
  *
- * See https://www.bungie.net/en/Help/Article/45481 for details about
+ * See https://bungie-net.github.io/multi/index.html#about-security for details about
  * Bungie.net OAuth.
  */
 
@@ -34,7 +34,7 @@ const localStorageKey = 'authorization';
  */
 export function getToken(): Tokens | null {
   const tokenString = localStorage.getItem(localStorageKey);
-  return tokenString ? JSON.parse(tokenString) : null;
+  return tokenString ? (JSON.parse(tokenString) as Tokens) : null;
 }
 
 /**
@@ -62,10 +62,7 @@ export function hasValidAuthTokens() {
 
   // Get a new token from refresh token
   const refreshTokenIsValid = token && !hasTokenExpired(token.refreshToken);
-  if (!refreshTokenIsValid) {
-    return false;
-  }
-  return true;
+  return refreshTokenIsValid;
 }
 
 /**
@@ -86,11 +83,7 @@ export function removeAccessToken() {
  * @return UTC epoch milliseconds timestamp
  */
 function getTokenExpiration(token?: Token): number {
-  if (
-    token &&
-    Object.prototype.hasOwnProperty.call(token, 'inception') &&
-    Object.prototype.hasOwnProperty.call(token, 'expires')
-  ) {
+  if (token && 'inception' in token && 'expires' in token) {
     const inception = token.inception;
     return inception + token.expires * 1000;
   }
@@ -109,7 +102,7 @@ export function hasTokenExpired(token?: Token) {
   const now = Date.now();
 
   // if (token)
-  //   { console.log("Expires: " + token.name + " " + ((expires <= now)) + " " + ((expires - now) / 1000 / 60)); }
+  //   { log("Expires: " + token.name + " " + ((expires <= now)) + " " + ((expires - now) / 1000 / 60)); }
 
   return now > expires;
 }

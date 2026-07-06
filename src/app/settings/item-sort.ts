@@ -1,20 +1,34 @@
+import { settingsSelector } from 'app/dim-api/selectors';
+import { DimItem } from 'app/inventory/item-types';
+import { getTagSelector } from 'app/inventory/selectors';
+import { sortItems } from 'app/shell/item-comparators';
 import { RootState } from 'app/store/types';
-import { settingsSelector } from './reducer';
+import { createSelector } from 'reselect';
 import { Settings } from './initial-settings';
 
-const itemSortPresets = {
-  primaryStat: ['primStat', 'name'],
-  basePowerThenPrimary: ['basePower', 'primStat', 'name'],
-  rarityThenPrimary: ['rarity', 'primStat', 'name'],
-  quality: ['rating', 'name'],
-  name: ['name'],
-  typeThenPrimary: ['typeName', 'classType', 'primStat', 'name'],
-  typeThenName: ['typeName', 'classType', 'name'],
-};
+export interface ItemSortSettings {
+  sortOrder: Settings['itemSortOrderCustom'];
+  sortReversals: Settings['itemSortReversals'];
+}
 
-export const itemSortOrder = (settings: Settings): string[] =>
-  (settings.itemSort === 'custom'
-    ? settings.itemSortOrderCustom
-    : itemSortPresets[settings.itemSort]) || itemSortPresets.primaryStat;
+const itemSortOrderCustomSelector = (state: RootState) =>
+  settingsSelector(state).itemSortOrderCustom;
+const itemSortReversalsSelector = (state: RootState) => settingsSelector(state).itemSortReversals;
 
-export const itemSortOrderSelector = (state: RootState) => itemSortOrder(settingsSelector(state));
+export const itemSortSettingsSelector = createSelector(
+  itemSortOrderCustomSelector,
+  itemSortReversalsSelector,
+  (itemSortOrderCustom, itemSortReversals) => ({
+    sortOrder: itemSortOrderCustom || ['primStat', 'name'],
+    sortReversals: itemSortReversals || [],
+  }),
+);
+
+/**
+ * Get a function that will sort items according to the user's preferences.
+ */
+export const itemSorterSelector = createSelector(
+  itemSortSettingsSelector,
+  getTagSelector,
+  (sortSettings, getTag) => (items: readonly DimItem[]) => sortItems(items, sortSettings, getTag),
+);

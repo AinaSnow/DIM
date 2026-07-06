@@ -1,18 +1,30 @@
+import { UNSET_PLUG_HASH } from 'app/loadout/known-values';
+import { d2ManifestSelector } from 'app/manifest/selectors';
+import { ThunkResult } from 'app/store/types';
+import { warnLogCollapsedStack } from 'app/utils/log';
+import { reportException } from 'app/utils/sentry';
 import {
+  AllDestinyManifestComponents,
   DestinyActivityDefinition,
   DestinyActivityModeDefinition,
   DestinyActivityModifierDefinition,
+  DestinyBreakerTypeDefinition,
   DestinyClassDefinition,
   DestinyCollectibleDefinition,
   DestinyDamageTypeDefinition,
   DestinyDestinationDefinition,
-  DestinyEnergyTypeDefinition,
+  DestinyEquipableItemSetDefinition,
+  DestinyEventCardDefinition,
   DestinyFactionDefinition,
   DestinyGenderDefinition,
+  DestinyIconDefinition,
   DestinyInventoryBucketDefinition,
+  DestinyInventoryItemConstantsDefinition,
   DestinyInventoryItemDefinition,
   DestinyItemCategoryDefinition,
-  DestinyItemTierTypeDefinition,
+  DestinyLoadoutColorDefinition,
+  DestinyLoadoutIconDefinition,
+  DestinyLoadoutNameDefinition,
   DestinyMaterialRequirementSetDefinition,
   DestinyMetricDefinition,
   DestinyMilestoneDefinition,
@@ -30,30 +42,24 @@ import {
   DestinySocketTypeDefinition,
   DestinyStatDefinition,
   DestinyStatGroupDefinition,
-  DestinyTalentGridDefinition,
   DestinyTraitDefinition,
   DestinyVendorDefinition,
   DestinyVendorGroupDefinition,
-  DestinyPowerCapDefinition,
-  DestinyBreakerTypeDefinition,
 } from 'bungie-api-ts/destiny2';
-
-import { getManifest } from '../manifest/manifest-service-json';
-import { ManifestDefinitions } from './definitions';
-import _ from 'lodash';
+import { ItemCategoryHashes } from 'data/d2/generated-enums';
 import { setD2Manifest } from '../manifest/actions';
-import { reportException } from 'app/utils/exceptions';
-import { ThunkResult } from 'app/store/types';
+import { getManifest } from '../manifest/manifest-service-json';
+import { HashLookupFailure } from './definitions';
 
-const lazyTables = [
+type ManifestTablesShort = Exclude<keyof D2ManifestDefinitions, 'isDestiny2'>;
+
+export const allTables: ManifestTablesShort[] = [
   'InventoryItem',
   'Objective',
   'SandboxPerk',
   'Stat',
   'StatGroup',
-  'EnergyType',
   'DamageType',
-  'TalentGrid',
   'Progression',
   'ItemCategory',
   'Activity',
@@ -74,39 +80,47 @@ const lazyTables = [
   'Record',
   'Metric',
   'Trait',
-  'PowerCap',
   'BreakerType',
-];
-
-const eagerTables = [
+  'EventCard',
+  'LoadoutName',
+  'LoadoutIcon',
+  'LoadoutColor',
   'InventoryBucket',
   'Class',
   'Gender',
   'Race',
   'Faction',
-  'ItemTierType',
   'ActivityMode',
+  'EquipableItemSet',
+  'Icon',
+  'InventoryItemConstants',
 ];
 
-/** These aren't really lazy */
 export interface DefinitionTable<T> {
   /**
    * for troubleshooting/questionable lookups, include second arg
    * and sentry can gather info about the source of the invalid hash.
    * `requestor` ideally a string/number, or a definition including a "hash" key
    */
-  get(hash: number, requestor?: any): T;
-  getAll(): { [hash: number]: T };
+  readonly get: (hash: number, requestor?: { hash: number } | string | number) => T;
+  /** for lookups that frequently may reasonably fail due to def data removal */
+  readonly getOptional: (hash: number) => T | undefined;
+  readonly getAll: () => { [hash: number]: T };
 }
 
-export interface D2ManifestDefinitions extends ManifestDefinitions {
+export interface D2ManifestDefinitions {
+  InventoryBucket: DefinitionTable<DestinyInventoryBucketDefinition>;
+  Class: DefinitionTable<DestinyClassDefinition>;
+  Gender: DefinitionTable<DestinyGenderDefinition>;
+  Race: DefinitionTable<DestinyRaceDefinition>;
+  Faction: DefinitionTable<DestinyFactionDefinition>;
+  // ActivityMode is used only from destiny-symbols.ts
+  ActivityMode: DefinitionTable<DestinyActivityModeDefinition>;
   InventoryItem: DefinitionTable<DestinyInventoryItemDefinition>;
   Objective: DefinitionTable<DestinyObjectiveDefinition>;
   SandboxPerk: DefinitionTable<DestinySandboxPerkDefinition>;
   Stat: DefinitionTable<DestinyStatDefinition>;
   StatGroup: DefinitionTable<DestinyStatGroupDefinition>;
-  EnergyType: DefinitionTable<DestinyEnergyTypeDefinition>;
-  TalentGrid: DefinitionTable<DestinyTalentGridDefinition>;
   Progression: DefinitionTable<DestinyProgressionDefinition>;
   ItemCategory: DefinitionTable<DestinyItemCategoryDefinition>;
   Activity: DefinitionTable<DestinyActivityDefinition>;
@@ -126,18 +140,18 @@ export interface D2ManifestDefinitions extends ManifestDefinitions {
   Record: DefinitionTable<DestinyRecordDefinition>;
   Metric: DefinitionTable<DestinyMetricDefinition>;
   Trait: DefinitionTable<DestinyTraitDefinition>;
-  PowerCap: DefinitionTable<DestinyPowerCapDefinition>;
   BreakerType: DefinitionTable<DestinyBreakerTypeDefinition>;
   DamageType: DefinitionTable<DestinyDamageTypeDefinition>;
   Collectible: DefinitionTable<DestinyCollectibleDefinition>;
-
-  InventoryBucket: { [hash: number]: DestinyInventoryBucketDefinition };
-  Class: { [hash: number]: DestinyClassDefinition };
-  Gender: { [hash: number]: DestinyGenderDefinition };
-  Race: { [hash: number]: DestinyRaceDefinition };
-  Faction: { [hash: number]: DestinyFactionDefinition };
-  ItemTierType: { [hash: number]: DestinyItemTierTypeDefinition };
-  ActivityMode: { [hash: number]: DestinyActivityModeDefinition };
+  EventCard: DefinitionTable<DestinyEventCardDefinition>;
+  LoadoutName: DefinitionTable<DestinyLoadoutNameDefinition>;
+  LoadoutColor: DefinitionTable<DestinyLoadoutColorDefinition>;
+  LoadoutIcon: DefinitionTable<DestinyLoadoutIconDefinition>;
+  EquipableItemSet: DefinitionTable<DestinyEquipableItemSetDefinition>;
+  Icon: DefinitionTable<DestinyIconDefinition>;
+  InventoryItemConstants: DestinyInventoryItemConstantsDefinition;
+  /** Check if these defs are from D2. Inside an if statement, these defs will be narrowed to type D2ManifestDefinitions. */
+  readonly isDestiny2: true;
 }
 
 /**
@@ -145,57 +159,88 @@ export interface D2ManifestDefinitions extends ManifestDefinitions {
  * object that has a property named after each of the tables listed
  * above (defs.TalentGrid, etc.).
  */
-export function getDefinitions(): ThunkResult<D2ManifestDefinitions> {
+export function getDefinitions(force = false): ThunkResult<D2ManifestDefinitions> {
   return async (dispatch, getState) => {
-    let existingManifest = getState().manifest.d2Manifest;
-    if (existingManifest) {
+    let existingManifest = d2ManifestSelector(getState());
+    if (existingManifest && !force) {
       return existingManifest;
     }
-    const db = await dispatch(getManifest([...eagerTables, ...lazyTables]));
-    existingManifest = getState().manifest.d2Manifest;
-    if (existingManifest) {
+    const db = await dispatch(getManifest(allTables));
+    existingManifest = d2ManifestSelector(getState());
+    if (existingManifest && !force) {
       return existingManifest;
     }
-    const defs = {
-      isDestiny1: () => false,
-      isDestiny2: () => true,
-    };
-    lazyTables.forEach((tableShort) => {
-      const table = `Destiny${tableShort}Definition`;
-      defs[tableShort] = {
-        get(id: number, requestor?: any) {
-          const dbTable = db[table];
-          if (!dbTable) {
-            throw new Error(`Table ${table} does not exist in the manifest`);
-          }
-          const dbEntry = dbTable[id];
-          if (!dbEntry) {
-            const requestingEntryInfo =
-              typeof requestor === 'object' ? requestor.hash : String(requestor);
-            reportException(
-              `hashLookupFailure: ${table}[${id}]`,
-              new Error(`hashLookupFailure: ${table}[${id}]`),
-              {
-                requestingEntryInfo,
-                failedHash: id,
-                failedComponent: table,
-              }
-            );
-          }
-          return dbEntry;
-        },
-        getAll() {
-          return db[table];
-        },
-      };
-    });
-    // Resources that need to be fully loaded (because they're iterated over)
-    eagerTables.forEach((tableShort) => {
-      const table = `Destiny${tableShort}Definition`;
-      defs[tableShort] = db[table];
-    });
 
-    dispatch(setD2Manifest(defs as D2ManifestDefinitions));
-    return defs as D2ManifestDefinitions;
+    const defs = buildDefinitionsFromManifest(db);
+    dispatch(setD2Manifest(defs));
+    return defs;
+  };
+}
+
+/**
+ * These are useful constants (mostly item images) that are in the manifest.
+ * This is reassigned to a global because it will never change once loaded, and
+ * we don't want every item image to gain a subscription to the manifest.
+ */
+export let itemConstants: DestinyInventoryItemConstantsDefinition | undefined;
+
+export function buildDefinitionsFromManifest(db: AllDestinyManifestComponents) {
+  enhanceDBWithFakeEntries(db);
+  const defs: { [table: string]: any; isDestiny2: true } = {
+    isDestiny2: true,
+  };
+
+  defs.InventoryItemConstants = itemConstants = db.DestinyInventoryItemConstantsDefinition[1];
+
+  for (const tableShort of allTables) {
+    if (tableShort === 'InventoryItemConstants') {
+      // InventoryItemConstants is a special case, it is not a table but a single entry in the
+      // DestinyInventoryItemConstantsDefinition table.
+      continue;
+    }
+    const table = `Destiny${tableShort}Definition` as const;
+    const dbTable = db[table];
+    if (!dbTable) {
+      throw new Error(`Table ${table} does not exist in the manifest`);
+    }
+
+    defs[tableShort] = {
+      get(id: number, requestor?: { hash: number } | string | number) {
+        const dbEntry = dbTable[id];
+        if (!dbEntry) {
+          // there are valid negative hashes that we have added ourselves via enhanceDBWithFakeEntries,
+          // but other than that they should be whole & reasonable sized numbers
+          if (id < 1 || !Number.isSafeInteger(id)) {
+            const requestingEntryInfo = typeof requestor === 'object' ? requestor.hash : requestor;
+            reportException('invalidHash', new HashLookupFailure(table, id), {
+              requestingEntryInfo,
+              failedHash: id,
+              failedComponent: table,
+            });
+          } else if (id !== UNSET_PLUG_HASH) {
+            // an invalid hash that, in new loadouts, just means lookup should fail
+            warnLogCollapsedStack('hashLookupFailure', `${table}[${id}]`, requestor);
+          }
+        }
+        return dbEntry;
+      },
+      getOptional(id: number) {
+        return dbTable[id];
+      },
+      getAll() {
+        return dbTable;
+      },
+    };
+  }
+
+  return defs as D2ManifestDefinitions;
+}
+
+/** This adds fake entries to the DB for places where we've had to make stuff up. */
+function enhanceDBWithFakeEntries(db: AllDestinyManifestComponents) {
+  // We made up an item category for special grenade launchers. For now they can just be a copy
+  // of the regular "Grenade Launcher" category but we could patch in localized descriptions if we wanted.
+  db.DestinyItemCategoryDefinition[-ItemCategoryHashes.GrenadeLaunchers] = {
+    ...db.DestinyItemCategoryDefinition[ItemCategoryHashes.GrenadeLaunchers],
   };
 }

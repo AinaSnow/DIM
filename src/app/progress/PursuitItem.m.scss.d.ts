@@ -4,9 +4,9 @@ interface CssExports {
   'amount': string;
   'complete': string;
   'expired': string;
+  'flawedPassage': string;
   'fullstack': string;
   'image': string;
-  'newItem': string;
   'progress': string;
   'progressAmount': string;
   'pursuit': string;
@@ -14,4 +14,4 @@ interface CssExports {
   'trackedIcon': string;
 }
 export const cssExports: CssExports;
-export default cssExports;
+export = cssExports;

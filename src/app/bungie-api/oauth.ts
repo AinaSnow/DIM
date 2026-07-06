@@ -1,52 +1,74 @@
+import { infoLog } from 'app/utils/log';
+import { dedupePromise } from 'app/utils/promises';
 import { oauthClientId, oauthClientSecret } from './bungie-api-utils';
-import { Tokens, Token } from './oauth-tokens';
-import { stringify } from 'simple-query-string';
+import { toHttpStatusError } from './http-client';
+import { Token, Tokens, setToken } from './oauth-tokens';
+
+// all these api url params don't match our variable naming conventions
 
 const TOKEN_URL = 'https://www.bungie.net/platform/app/oauth/token/';
 
-// https://www.bungie.net/en/Clan/Post/1777779/227330965/0/0
-
-export function getAccessTokenFromRefreshToken(refreshToken: Token): Promise<Tokens> {
-  // https://github.com/zloirock/core-js/issues/178#issuecomment-192081350
-  return Promise.resolve(
-    fetch(TOKEN_URL, {
+/**
+ * Get a new token given a valid refresh token. This can throw with a
+ * full HTTP response!
+ */
+export const getAccessTokenFromRefreshToken = dedupePromise(
+  async (refreshToken: Token): Promise<Tokens> => {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken.value,
+      client_id: oauthClientId(),
+      client_secret: oauthClientSecret(),
+    });
+    const response = await fetch(TOKEN_URL, {
       method: 'POST',
-      body: stringify({
-        grant_type: 'refresh_token', // eslint-disable-line @typescript-eslint/naming-convention
-        refresh_token: refreshToken.value, // eslint-disable-line @typescript-eslint/naming-convention
-        client_id: oauthClientId(), // eslint-disable-line @typescript-eslint/naming-convention
-        client_secret: oauthClientSecret(), // eslint-disable-line @typescript-eslint/naming-convention
-      }),
+      body,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-    })
-      .then((response) => (response.ok ? response.json() : Promise.reject(response)))
-      .then(handleAccessToken)
-  );
+    });
+    if (response.ok) {
+      const token = handleAccessToken((await response.json()) as OauthTokenResponse);
+      setToken(token);
+      infoLog('bungie auth', 'Successfully updated auth token from refresh token.');
+      return token;
+    } else {
+      throw await toHttpStatusError(response);
+    }
+  },
+);
+
+export async function getAccessTokenFromCode(code: string): Promise<Tokens> {
+  const body = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    client_id: oauthClientId(),
+    client_secret: oauthClientSecret(),
+  });
+  const response = await fetch(TOKEN_URL, {
+    method: 'POST',
+    body,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+  });
+
+  if (response.ok) {
+    return handleAccessToken((await response.json()) as OauthTokenResponse);
+  } else {
+    throw await toHttpStatusError(response);
+  }
 }
 
-export function getAccessTokenFromCode(code: number): Promise<Tokens> {
-  return Promise.resolve(
-    fetch(TOKEN_URL, {
-      method: 'POST',
-      body: stringify({
-        grant_type: 'authorization_code', // eslint-disable-line @typescript-eslint/naming-convention
-        code,
-        client_id: oauthClientId(), // eslint-disable-line @typescript-eslint/naming-convention
-        client_secret: oauthClientSecret(), // eslint-disable-line @typescript-eslint/naming-convention
-      }),
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    })
-      .then((response) => (response.ok ? response.json() : Promise.reject(response)))
-      .then(handleAccessToken)
-  );
+interface OauthTokenResponse {
+  access_token: string;
+  expires_in: number;
+  membership_id: string;
+  refresh_token?: string;
+  refresh_expires_in: number;
 }
 
-function handleAccessToken(response): Tokens {
-  // eslint-disable-next-line @typescript-eslint/naming-convention
+function handleAccessToken(response: OauthTokenResponse | undefined): Tokens {
   if (response?.access_token) {
     const data = response;
     const inception = Date.now();
@@ -73,6 +95,6 @@ function handleAccessToken(response): Tokens {
 
     return tokens;
   } else {
-    throw new Error('No data or access token in response: ' + JSON.stringify(response));
+    throw new Error(`No data or access token in response: ${JSON.stringify(response)}`);
   }
 }

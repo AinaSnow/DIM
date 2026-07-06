@@ -1,82 +1,83 @@
-import { t } from 'app/i18next-t';
-import _ from 'lodash';
-import React, { useCallback } from 'react';
-import { connect } from 'react-redux';
-import { DestinyAccount } from '../accounts/destiny-account';
-import { D2StoresService } from '../inventory/d2-stores';
-import { DimStore } from '../inventory/store-types';
-import { RootState } from 'app/store/types';
-import { sortedStoresSelector } from '../inventory/selectors';
-import { D2ManifestDefinitions } from 'app/destiny2/d2-definitions';
-import { refresh$ } from 'app/shell/refresh';
-import { queueAction } from 'app/inventory/action-queue';
 import ShowPageLoading from 'app/dim-ui/ShowPageLoading';
-import { RouteComponentProps, withRouter, StaticContext } from 'react-router';
+import { t } from 'app/i18next-t';
+import { useLoadStores } from 'app/inventory/store/hooks';
 import { Loadout } from 'app/loadout/loadout-types';
-import { useSubscription } from 'app/utils/hooks';
+import { useD2Definitions } from 'app/manifest/selectors';
+import ErrorPanel from 'app/shell/ErrorPanel';
+import { setSearchQuery } from 'app/shell/actions';
+import { useThunkDispatch } from 'app/store/thunk-dispatch';
+import { usePageTitle } from 'app/utils/hooks';
+import { useEffect } from 'react';
+import { useSelector } from 'react-redux';
+import { useLocation } from 'react-router';
+import { createSelector } from 'reselect';
+import { DestinyAccount } from '../accounts/destiny-account';
+import { allItemsSelector } from '../inventory/selectors';
 import LoadoutBuilder from './LoadoutBuilder';
-import { Location } from 'history';
+import { ResolvedStatConstraint } from './types';
 
-interface ProvidedProps {
-  account: DestinyAccount;
-  location: Location<{
-    loadout?: Loadout | undefined;
-  }>;
-}
-
-interface StoreProps {
-  stores: DimStore[];
-  defs?: D2ManifestDefinitions;
-}
-
-type Props = ProvidedProps &
-  StoreProps &
-  RouteComponentProps<{}, StaticContext, { loadout?: Loadout }>;
-
-function mapStateToProps() {
-  return (state: RootState): StoreProps => ({
-    stores: sortedStoresSelector(state),
-    defs: state.manifest.d2Manifest,
-  });
-}
+const disabledDueToMaintenanceSelector = createSelector(
+  allItemsSelector,
+  (items) => items.length > 0 && items.every((item) => item.missingSockets || !item.sockets),
+);
 
 /**
- * The Loadout Optimizer screen
- * TODO This isn't really a container but I can't think of a better name. It's more like
- * a LoadoutBuilderEnsureStuffIsLoaded
+ * The entry point for the Loadout Optimizer screen. This is responsible for
+ * making sure things are loading and reading initial loadout optimizer state
+ * from URL parameters. It then delegates to LoadoutBuilder which does most of
+ * the work.
  */
-function LoadoutBuilderContainer({ account, stores, defs, location }: Props) {
-  useSubscription(
-    useCallback(
-      () =>
-        D2StoresService.getStoresStream(account).subscribe((stores) => {
-          if (!stores || !stores.length) {
-            return;
-          }
-        }),
-      [account]
-    )
-  );
+export default function LoadoutBuilderContainer({ account }: { account: DestinyAccount }) {
+  usePageTitle(t('LB.LB'));
+  const location = useLocation();
+  const dispatch = useThunkDispatch();
+  const defs = useD2Definitions();
+  const disabledDueToMaintenance = useSelector(disabledDueToMaintenanceSelector);
+  const storesLoaded = useLoadStores(account);
 
-  useSubscription(
-    useCallback(
-      () => refresh$.subscribe(() => queueAction(() => D2StoresService.reloadStores())),
-      []
-    )
-  );
+  let query: string | undefined;
 
-  if (!stores || !stores.length || !defs) {
+  // Get an entire loadout from state - this is used when optimizing a loadout from within DIM.
+  const locationState = location.state as
+    | {
+        loadout: Loadout | undefined;
+        storeId: string | undefined;
+        strictUpgradeStatConstraints: ResolvedStatConstraint[] | undefined;
+      }
+    | undefined;
+  const preloadedLoadout = locationState?.loadout;
+  if (preloadedLoadout?.parameters?.query) {
+    query = preloadedLoadout.parameters.query;
+  }
+
+  const storeId = locationState?.storeId;
+
+  // Apply the preloaded loadout's query to the main search bar
+  useEffect(() => {
+    if (query) {
+      dispatch(setSearchQuery(query));
+    }
+  }, [dispatch, query]);
+
+  if (!storesLoaded || !defs) {
     return <ShowPageLoading message={t('Loading.Profile')} />;
+  }
+
+  // Don't even bother showing the tool when Bungie has shut off sockets.
+  if (disabledDueToMaintenance) {
+    return (
+      <div className="dim-page">
+        <ErrorPanel title={t('LoadoutBuilder.DisabledDueToMaintenance')} showSocials />
+      </div>
+    );
   }
 
   return (
     <LoadoutBuilder
-      account={account}
-      stores={stores}
-      defs={defs}
-      preloadedLoadout={location.state?.loadout}
+      key={preloadedLoadout?.id ?? storeId ?? 'lo'}
+      preloadedLoadout={preloadedLoadout}
+      preloadedStrictStatConstraints={locationState?.strictUpgradeStatConstraints}
+      storeId={storeId}
     />
   );
 }
-
-export default withRouter(connect<StoreProps>(mapStateToProps)(LoadoutBuilderContainer));
